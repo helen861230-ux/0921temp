@@ -101,30 +101,55 @@ function parseNum(val: string | undefined): number | null {
   return isNaN(n) ? null : n;
 }
 
-export function cleanStationData(raw: CWAStationRaw): CleanedStation {
-  const wgs84 = raw.GeoInfo.Coordinates.find(
+export interface NormalizedStationData {
+  station_id: string;
+  station_name: string;
+  county_name: string;
+  town_name: string;
+  latitude: number | null;
+  longitude: number | null;
+  altitude: number | null;
+  obs_time: string;
+  weather: string;
+  air_temperature: number | null;
+  relative_humidity: number | null;
+  precipitation: number | null;
+  wind_speed: number | null;
+  wind_direction: number | null;
+  air_pressure: number | null;
+  uv_index: number | null;
+}
+
+/**
+ * Converts CWA raw station into consistent snake_case normalized data matching the database schema.
+ */
+export function normalizeStationData(raw: CWAStationRaw): NormalizedStationData {
+  const wgs84 = raw.GeoInfo.Coordinates?.find(
     (c) => c.CoordinateName === "WGS84"
-  ) || raw.GeoInfo.Coordinates[0];
+  ) || raw.GeoInfo.Coordinates?.[0];
 
   return {
-    stationId: raw.StationId,
-    stationName: raw.StationName,
-    countyName: raw.GeoInfo.CountyName || "未知縣市",
-    townName: raw.GeoInfo.TownName || "",
+    station_id: raw.StationId,
+    station_name: raw.StationName,
+    county_name: raw.GeoInfo.CountyName || "未知縣市",
+    town_name: raw.GeoInfo.TownName || "",
     latitude: wgs84 ? parseNum(wgs84.StationLatitude) : null,
     longitude: wgs84 ? parseNum(wgs84.StationLongitude) : null,
     altitude: parseNum(raw.GeoInfo.StationAltitude),
-    obsTime: raw.ObsTime?.DateTime || "",
+    obs_time: raw.ObsTime?.DateTime || "",
     weather: raw.WeatherElement.Weather === "-99" ? "正常" : (raw.WeatherElement.Weather || "正常"),
-    airTemperature: parseNum(raw.WeatherElement.AirTemperature),
-    relativeHumidity: parseNum(raw.WeatherElement.RelativeHumidity),
+    air_temperature: parseNum(raw.WeatherElement.AirTemperature),
+    relative_humidity: parseNum(raw.WeatherElement.RelativeHumidity),
     precipitation: parseNum(raw.WeatherElement.Now?.Precipitation),
-    windSpeed: parseNum(raw.WeatherElement.WindSpeed),
-    windDirection: parseNum(raw.WeatherElement.WindDirection),
-    airPressure: parseNum(raw.WeatherElement.AirPressure),
-    uvIndex: parseNum(raw.WeatherElement.UVIndex),
+    wind_speed: parseNum(raw.WeatherElement.WindSpeed),
+    wind_direction: parseNum(raw.WeatherElement.WindDirection),
+    air_pressure: parseNum(raw.WeatherElement.AirPressure),
+    uv_index: parseNum(raw.WeatherElement.UVIndex),
   };
 }
+
+
+export const cleanStationData = normalizeStationData;
 
 export async function fetchCWAWeatherStations(apiKey?: string, options?: { limit?: number; stationId?: string }) {
   const key = apiKey || process.env.CWA_API_KEY;
@@ -156,13 +181,14 @@ export async function fetchCWAWeatherStations(apiKey?: string, options?: { limit
 
   const data = await res.json();
   const rawStations: CWAStationRaw[] = data?.records?.Station || [];
-  const cleanedStations = rawStations.map(cleanStationData);
+  const normalizedStations: NormalizedStationData[] = rawStations.map(normalizeStationData);
 
   return {
     success: data?.success === "true" || data?.success === true,
     resourceId: data?.result?.resource_id || "O-A0003-001",
-    totalCount: cleanedStations.length,
-    stations: cleanedStations,
+    totalCount: normalizedStations.length,
+    stations: normalizedStations,
     rawStations: rawStations,
   };
 }
+

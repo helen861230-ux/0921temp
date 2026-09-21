@@ -1,82 +1,189 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
-import { CleanedStation } from "@/lib/cwa";
 
-interface ApiResponse {
+interface WeatherStationItem {
+  station_id: string;
+  station_name: string;
+  county_name: string;
+  town_name: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  altitude: number | null;
+  obs_time: string | null;
+  weather: string | null;
+  air_temperature: number | null;
+  relative_humidity: number | null;
+  precipitation: number | null;
+  wind_speed: number | null;
+  wind_direction: number | null;
+  air_pressure: number | null;
+  uv_index: number | null;
+}
+
+interface DatabaseStats {
+  connected: boolean;
+  stations_count: number;
+  observations_count: number;
+  latest_obs_time: string | null;
+}
+
+interface SyncResult {
   success: boolean;
-  dataset: string;
-  timestamp: string;
-  count: number;
-  stations: CleanedStation[];
+  message?: string;
+  stations_upserted?: number;
+  observations_inserted?: number;
+  duplicates_skipped?: number;
+  elapsed_ms?: number;
   error?: string;
 }
 
 export default function Home() {
-  const [data, setData] = useState<ApiResponse | null>(null);
+  const [dataSource, setDataSource] = useState<"cwa_live" | "supabase_db">("cwa_live");
+  const [stations, setStations] = useState<WeatherStationItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState<string>("");
   const [selectedCounty, setSelectedCounty] = useState<string>("全部");
-  const [selectedStation, setSelectedStation] = useState<CleanedStation | null>(null);
+  const [selectedStation, setSelectedStation] = useState<WeatherStationItem | null>(null);
   const [viewMode, setViewMode] = useState<"cards" | "json">("cards");
   const [fetchLatency, setFetchLatency] = useState<number | null>(null);
 
-  const fetchData = async () => {
+  // Admin / Dev Tooling State
+  const [dbStats, setDbStats] = useState<DatabaseStats | null>(null);
+  const [dbAvailable, setDbAvailable] = useState<boolean>(false);
+  const [syncing, setSyncing] = useState<boolean>(false);
+  const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
+  const [showAdminTools, setShowAdminTools] = useState<boolean>(true);
+
+  // Check Database Status
+  const checkDbStatus = async () => {
+    try {
+      const res = await fetch("/api/weather?stats=true");
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && json.stats) {
+          setDbStats(json.stats);
+          setDbAvailable(true);
+        }
+      } else {
+        setDbAvailable(false);
+      }
+    } catch {
+      setDbAvailable(false);
+    }
+  };
+
+  // Fetch weather data based on current data source
+  const loadData = async (source: "cwa_live" | "supabase_db") => {
     setLoading(true);
     setError(null);
     const start = performance.now();
+
     try {
-      const res = await fetch("/api/cwa?limit=100&raw=true");
+      const endpoint =
+        source === "cwa_live"
+          ? "/api/cwa?limit=100"
+          : "/api/weather?limit=100";
+
+      const res = await fetch(endpoint);
       const elapsed = Math.round(performance.now() - start);
       setFetchLatency(elapsed);
 
       if (!res.ok) {
-        throw new Error(`HTTP error! status: ${res.status}`);
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || `HTTP error! status: ${res.status}`);
       }
-      const json: ApiResponse = await res.json();
+
+      const json = await res.json();
       if (!json.success) {
-        throw new Error(json.error || "Failed to load CWA data");
+        throw new Error(json.error || "Failed to load data");
       }
-      setData(json);
-      if (json.stations && json.stations.length > 0) {
-        setSelectedStation(json.stations[0]);
+
+      // Consistent snake_case normalization
+      const items: WeatherStationItem[] = (json.stations || []).map((s: any) => ({
+        station_id: s.station_id || s.stationId,
+        station_name: s.station_name || s.stationName,
+        county_name: s.county_name || s.countyName,
+        town_name: s.town_name || s.townName || null,
+        latitude: s.latitude ?? null,
+        longitude: s.longitude ?? null,
+        altitude: s.altitude ?? null,
+        obs_time: s.obs_time || s.obsTime || null,
+        weather: s.weather || "正常",
+        air_temperature: s.air_temperature ?? s.airTemperature ?? null,
+        relative_humidity: s.relative_humidity ?? s.relativeHumidity ?? null,
+        precipitation: s.precipitation ?? null,
+        wind_speed: s.wind_speed ?? s.windSpeed ?? null,
+        wind_direction: s.wind_direction ?? s.windDirection ?? null,
+        air_pressure: s.air_pressure ?? s.airPressure ?? null,
+        uv_index: s.uv_index ?? s.uvIndex ?? null,
+      }));
+
+      setStations(items);
+      if (items.length > 0) {
+        setSelectedStation(items[0]);
       }
     } catch (err: any) {
-      setError(err.message || "Failed to connect to CWA API");
+      setError(err.message || "Failed to fetch weather data");
     } finally {
       setLoading(false);
     }
   };
 
+  // Trigger POST /api/sync (Write-Only Dev Tooling)
+  const handleTriggerSync = async () => {
+    setSyncing(true);
+    setSyncResult(null);
+    try {
+      const res = await fetch("/api/sync", {
+        method: "POST",
+      });
+      const json = await res.json();
+      setSyncResult(json);
+      if (json.success) {
+        await checkDbStatus();
+        if (dataSource === "supabase_db") {
+          await loadData("supabase_db");
+        }
+      }
+    } catch (err: any) {
+      setSyncResult({
+        success: false,
+        error: err.message || "Sync request failed",
+      });
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   useEffect(() => {
-    fetchData();
-  }, []);
+    checkDbStatus();
+    loadData(dataSource);
+  }, [dataSource]);
 
   const counties = useMemo(() => {
-    if (!data?.stations) return ["全部"];
     const set = new Set<string>();
-    data.stations.forEach((s) => {
-      if (s.countyName) set.add(s.countyName);
+    stations.forEach((s) => {
+      if (s.county_name) set.add(s.county_name);
     });
     return ["全部", ...Array.from(set)];
-  }, [data]);
+  }, [stations]);
 
   const filteredStations = useMemo(() => {
-    if (!data?.stations) return [];
-    return data.stations.filter((s) => {
+    return stations.filter((s) => {
       const matchesCounty =
-        selectedCounty === "全部" || s.countyName === selectedCounty;
+        selectedCounty === "全部" || s.county_name === selectedCounty;
       const query = search.toLowerCase().trim();
       const matchesSearch =
         !query ||
-        s.stationName.toLowerCase().includes(query) ||
-        s.stationId.toLowerCase().includes(query) ||
-        s.townName.toLowerCase().includes(query) ||
-        s.countyName.toLowerCase().includes(query);
+        s.station_name.toLowerCase().includes(query) ||
+        s.station_id.toLowerCase().includes(query) ||
+        (s.town_name && s.town_name.toLowerCase().includes(query)) ||
+        s.county_name.toLowerCase().includes(query);
       return matchesCounty && matchesSearch;
     });
-  }, [data, selectedCounty, search]);
+  }, [stations, selectedCounty, search]);
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 p-4 sm:p-8">
@@ -84,9 +191,12 @@ export default function Home() {
         {/* Header Section */}
         <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-6">
           <div>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                Milestone 1 Complete
+                Milestone 2 Ready
+              </span>
+              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                Supabase PostgreSQL
               </span>
               <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20">
                 Dataset: O-A0003-001
@@ -96,84 +206,186 @@ export default function Home() {
               Taiwan CWA Weather GIS
             </h1>
             <p className="text-slate-400 text-sm mt-1">
-              自動站氣象資料觀測與 API 驗證介面 (Central Weather Administration Open Data API)
+              氣象資料持久化儲存與查詢服務 (PostgreSQL / Supabase Storage & Normalized Schema)
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
+          {/* Data Source Selector */}
+          <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 p-1.5 rounded-xl">
+            <span className="text-xs text-slate-400 px-2 font-medium">資料來源:</span>
             <button
-              onClick={fetchData}
-              disabled={loading}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white text-sm font-medium rounded-lg transition-colors shadow-lg shadow-blue-500/20"
+              onClick={() => setDataSource("cwa_live")}
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                dataSource === "cwa_live"
+                  ? "bg-blue-600 text-white shadow"
+                  : "text-slate-400 hover:text-white"
+              }`}
             >
-              {loading ? (
-                <>
-                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                      fill="none"
-                    />
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                    />
-                  </svg>
-                  <span>更新中...</span>
-                </>
-              ) : (
-                <>
-                  <span>重新擷取資料</span>
-                </>
-              )}
+              CWA 即時 API
+            </button>
+            <button
+              onClick={() => setDataSource("supabase_db")}
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                dataSource === "supabase_db"
+                  ? "bg-indigo-600 text-white shadow"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              Supabase 資料庫 (/api/weather)
             </button>
           </div>
         </header>
 
+        {/* Development & Admin Tooling Panel (Milestone 2) */}
+        <section className="bg-slate-900/60 border border-indigo-900/40 rounded-xl overflow-hidden shadow-sm">
+          <div className="flex items-center justify-between px-4 py-3 bg-indigo-950/20 border-b border-indigo-900/30">
+            <div className="flex items-center gap-2 text-xs font-semibold text-indigo-300">
+              <span>🛠️ 開發與管理工具 (Development / Admin Tooling)</span>
+              <span className="text-slate-500">|</span>
+              <span className={dbAvailable ? "text-emerald-400" : "text-amber-400"}>
+                {dbAvailable ? "● 資料庫已連線" : "○ 未設定 DATABASE_URL"}
+              </span>
+            </div>
+            <button
+              onClick={() => setShowAdminTools(!showAdminTools)}
+              className="text-xs text-slate-400 hover:text-slate-200"
+            >
+              {showAdminTools ? "收合" : "展開"}
+            </button>
+          </div>
+
+          {showAdminTools && (
+            <div className="p-4 space-y-4 text-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <p className="text-slate-300 font-medium">
+                    氣象資料庫同步管道 (CWA O-A0003-001 → PostgreSQL)
+                  </p>
+                  <p className="text-slate-500 text-[11px] mt-0.5">
+                    觸發 <code className="text-indigo-300">POST /api/sync</code>，寫入測站詮釋資料並新增觀測紀錄 (具冪等性防重複機制)。
+                  </p>
+                </div>
+                <button
+                  onClick={handleTriggerSync}
+                  disabled={syncing}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white text-xs font-semibold rounded-lg transition-colors shadow"
+                >
+                  {syncing ? (
+                    <>
+                      <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
+                        <circle
+                          className="opacity-25"
+                          cx="12"
+                          cy="12"
+                          r="10"
+                          stroke="currentColor"
+                          strokeWidth="4"
+                          fill="none"
+                        />
+                        <path
+                          className="opacity-75"
+                          fill="currentColor"
+                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                        />
+                      </svg>
+                      <span>同步中...</span>
+                    </>
+                  ) : (
+                    <span>立即執行寫入同步 (POST /api/sync)</span>
+                  )}
+                </button>
+              </div>
+
+              {/* Sync Feedback Message */}
+              {syncResult && (
+                <div
+                  className={`p-3 rounded-lg border ${
+                    syncResult.success
+                      ? "bg-emerald-950/40 border-emerald-800 text-emerald-300"
+                      : "bg-rose-950/40 border-rose-800 text-rose-300"
+                  }`}
+                >
+                  {syncResult.success ? (
+                    <div className="flex items-center justify-between">
+                      <span>
+                        ✅ 同步成功！更新測站: {syncResult.stations_upserted}，新增觀測紀錄:{" "}
+                        {syncResult.observations_inserted}，略過重複:{" "}
+                        {syncResult.duplicates_skipped}
+                      </span>
+                      <span className="text-[10px] text-slate-400">
+                        費時 {syncResult.elapsed_ms}ms
+                      </span>
+                    </div>
+                  ) : (
+                    <div>❌ 同步失敗: {syncResult.error}</div>
+                  )}
+                </div>
+              )}
+
+              {/* Database Stats */}
+              {dbStats && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-2 border-t border-slate-800/80">
+                  <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+                    <span className="text-slate-500">資料庫內測站總數:</span>
+                    <span className="font-bold text-white ml-2">{dbStats.stations_count} 站</span>
+                  </div>
+                  <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+                    <span className="text-slate-500">累計觀測紀錄筆數:</span>
+                    <span className="font-bold text-indigo-400 ml-2">
+                      {dbStats.observations_count} 筆
+                    </span>
+                  </div>
+                  <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 col-span-2 sm:col-span-1">
+                    <span className="text-slate-500">最新存檔時間:</span>
+                    <span className="font-mono text-slate-300 ml-2 text-[11px]">
+                      {dbStats.latest_obs_time ? new Date(dbStats.latest_obs_time).toLocaleTimeString() : "--"}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+
         {/* Status Metrics */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 shadow-sm">
-            <div className="text-xs font-medium text-slate-400">連線狀態</div>
+            <div className="text-xs font-medium text-slate-400">當前查詢來源</div>
             <div className="mt-2 flex items-center gap-2">
-              <span className={`h-2.5 w-2.5 rounded-full ${error ? "bg-rose-500" : "bg-emerald-500 animate-pulse"}`} />
-              <span className="text-lg font-bold text-white">
-                {error ? "連線異常" : "連線正常 (200 OK)"}
+              <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="text-base font-bold text-white">
+                {dataSource === "cwa_live" ? "CWA 即時 API" : "PostgreSQL 資料庫"}
               </span>
             </div>
-            <div className="text-xs text-slate-500 mt-1">
-              API 端點: <code className="text-slate-300">/api/cwa</code>
+            <div className="text-xs text-slate-500 mt-1 font-mono truncate">
+              {dataSource === "cwa_live" ? "GET /api/cwa" : "GET /api/weather"}
             </div>
           </div>
 
           <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 shadow-sm">
-            <div className="text-xs font-medium text-slate-400">已取得測站數</div>
+            <div className="text-xs font-medium text-slate-400">已載入測站數</div>
             <div className="mt-2 text-2xl font-bold text-white">
-              {data ? `${data.count} 站` : "--"}
+              {loading ? "--" : `${stations.length} 站`}
             </div>
             <div className="text-xs text-slate-500 mt-1">
-              符合篩選: {filteredStations.length} 站
+              符合目前篩選: {filteredStations.length} 站
             </div>
           </div>
 
           <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 shadow-sm">
-            <div className="text-xs font-medium text-slate-400">觀測資料時間</div>
+            <div className="text-xs font-medium text-slate-400">觀測時間戳記</div>
             <div className="mt-2 text-sm font-semibold text-slate-200 truncate">
-              {data?.stations?.[0]?.obsTime || "--"}
+              {stations[0]?.obs_time || "--"}
             </div>
-            <div className="text-xs text-slate-500 mt-1">臺灣中央氣象署標準時區</div>
+            <div className="text-xs text-slate-500 mt-1">臺灣氣象觀測標準時間</div>
           </div>
 
           <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 shadow-sm">
-            <div className="text-xs font-medium text-slate-400">API 回應延遲</div>
+            <div className="text-xs font-medium text-slate-400">查詢回應延遲</div>
             <div className="mt-2 text-2xl font-bold text-emerald-400">
               {fetchLatency !== null ? `${fetchLatency} ms` : "--"}
             </div>
-            <div className="text-xs text-slate-500 mt-1">Next.js Edge / Serverless Proxy</div>
+            <div className="text-xs text-slate-500 mt-1">Next.js API Handler</div>
           </div>
         </div>
 
@@ -182,12 +394,14 @@ export default function Home() {
           <div className="bg-rose-950/40 border border-rose-800 text-rose-300 p-4 rounded-xl flex items-start gap-3">
             <span className="text-lg">⚠️</span>
             <div>
-              <p className="font-semibold text-rose-200">無法連線至 CWA 氣象資料庫</p>
+              <p className="font-semibold text-rose-200">資料讀取異常</p>
               <p className="text-xs mt-1 text-rose-300/80">{error}</p>
-              <p className="text-xs mt-2 text-slate-400">
-                請確認 <code className="text-slate-200">.env.local</code> 中的{" "}
-                <code className="text-slate-200">CWA_API_KEY</code> 是否有效。
-              </p>
+              {dataSource === "supabase_db" && (
+                <p className="text-xs mt-2 text-slate-400">
+                  若使用資料庫來源，請確認在 <code className="text-slate-200">.env.local</code> 中已填寫有效的{" "}
+                  <code className="text-indigo-300">DATABASE_URL</code>。
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -200,12 +414,12 @@ export default function Home() {
               placeholder="搜尋測站名稱、站號或鄉鎮..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 w-full sm:w-64"
+              className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 w-full sm:w-64"
             />
             <select
               value={selectedCounty}
               onChange={(e) => setSelectedCounty(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
+              className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
             >
               {counties.map((c) => (
                 <option key={c} value={c}>
@@ -220,7 +434,7 @@ export default function Home() {
               onClick={() => setViewMode("cards")}
               className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
                 viewMode === "cards"
-                  ? "bg-blue-600 text-white"
+                  ? "bg-indigo-600 text-white"
                   : "text-slate-400 hover:text-white"
               }`}
             >
@@ -230,7 +444,7 @@ export default function Home() {
               onClick={() => setViewMode("json")}
               className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
                 viewMode === "json"
-                  ? "bg-blue-600 text-white"
+                  ? "bg-indigo-600 text-white"
                   : "text-slate-400 hover:text-white"
               }`}
             >
@@ -239,18 +453,18 @@ export default function Home() {
           </div>
         </div>
 
-        {/* View Mode Content */}
+        {/* Content View */}
         {viewMode === "cards" ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredStations.map((station) => {
-              const isSelected = selectedStation?.stationId === station.stationId;
+              const isSelected = selectedStation?.station_id === station.station_id;
               return (
                 <div
-                  key={station.stationId}
+                  key={station.station_id}
                   onClick={() => setSelectedStation(station)}
                   className={`cursor-pointer rounded-xl border p-4 transition-all duration-200 bg-slate-900/50 hover:bg-slate-900/90 ${
                     isSelected
-                      ? "border-blue-500/80 shadow-md shadow-blue-500/10"
+                      ? "border-indigo-500/80 shadow-md shadow-indigo-500/10"
                       : "border-slate-800/80 hover:border-slate-700"
                   }`}
                 >
@@ -258,20 +472,20 @@ export default function Home() {
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="text-lg font-bold text-white">
-                          {station.stationName}
+                          {station.station_name}
                         </span>
                         <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
-                          {station.stationId}
+                          {station.station_id}
                         </span>
                       </div>
                       <div className="text-xs text-slate-400 mt-1">
-                        📍 {station.countyName} {station.townName}
+                        📍 {station.county_name} {station.town_name || ""}
                       </div>
                     </div>
                     <div className="text-right">
-                      <span className="text-2xl font-bold text-blue-400">
-                        {station.airTemperature !== null
-                          ? `${station.airTemperature}°`
+                      <span className="text-2xl font-bold text-indigo-400">
+                        {station.air_temperature !== null
+                          ? `${station.air_temperature}°`
                           : "--"}
                       </span>
                       <div className="text-[10px] text-slate-500">氣溫</div>
@@ -282,8 +496,8 @@ export default function Home() {
                     <div>
                       <span className="text-slate-500">相對濕度</span>
                       <p className="font-semibold text-slate-300 mt-0.5">
-                        {station.relativeHumidity !== null
-                          ? `${station.relativeHumidity}%`
+                        {station.relative_humidity !== null
+                          ? `${station.relative_humidity}%`
                           : "--"}
                       </p>
                     </div>
@@ -298,8 +512,8 @@ export default function Home() {
                     <div>
                       <span className="text-slate-500">風速 / 風向</span>
                       <p className="font-semibold text-slate-300 mt-0.5">
-                        {station.windSpeed !== null
-                          ? `${station.windSpeed} m/s`
+                        {station.wind_speed !== null
+                          ? `${station.wind_speed} m/s`
                           : "--"}
                       </p>
                     </div>
@@ -318,11 +532,11 @@ export default function Home() {
         ) : (
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 overflow-hidden">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800 text-xs text-slate-400 font-mono">
-              <span>GET /api/cwa Response JSON</span>
-              <span>Dataset: O-A0003-001</span>
+              <span>{dataSource === "cwa_live" ? "GET /api/cwa" : "GET /api/weather"} Response</span>
+              <span>Total: {stations.length} Items</span>
             </div>
             <pre className="p-4 text-xs font-mono text-emerald-400/90 bg-slate-950 rounded-lg overflow-x-auto max-h-[600px]">
-              {JSON.stringify(data, null, 2)}
+              {JSON.stringify(stations, null, 2)}
             </pre>
           </div>
         )}

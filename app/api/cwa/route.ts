@@ -16,7 +16,9 @@ export async function GET(request: Request) {
 
     let filteredStations = result.stations;
     if (county) {
-      filteredStations = filteredStations.filter((s) => s.countyName.includes(county));
+      filteredStations = filteredStations.filter((s) =>
+        s.county_name.includes(county)
+      );
     }
 
     return NextResponse.json({
