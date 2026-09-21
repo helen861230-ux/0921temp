@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import MapWrapper from "@/components/MapWrapper";
 import type { WeatherStationGIS } from "@/components/TaiwanWeatherMap";
 
@@ -23,7 +23,7 @@ interface SyncResult {
 
 export default function Home() {
   const [viewMode, setViewMode] = useState<"map" | "cards" | "json">("map");
-  const [dataSource, setDataSource] = useState<"cwa_live" | "supabase_db">("supabase_db");
+  const [dataSource, setDataSource] = useState<"cwa_live" | "sqlite_db">("sqlite_db");
   const [stations, setStations] = useState<WeatherStationGIS[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -31,6 +31,9 @@ export default function Home() {
   const [selectedCounty, setSelectedCounty] = useState<string>("全部");
   const [selectedStation, setSelectedStation] = useState<WeatherStationGIS | null>(null);
   const [fetchLatency, setFetchLatency] = useState<number | null>(null);
+
+  const requestId = useRef(0);
+  const [loadedSource, setLoadedSource] = useState<string | null>(null);
 
   // Admin / Dev Tooling State
   const [dbStats, setDbStats] = useState<DatabaseStats | null>(null);
@@ -58,7 +61,8 @@ export default function Home() {
   }, []);
 
   // Fetch weather data. For GIS map, strictly query /api/weather.
-  const loadData = useCallback(async (source: "cwa_live" | "supabase_db", mode: "map" | "cards" | "json") => {
+  const loadData = useCallback(async (source: "cwa_live" | "sqlite_db", mode: "map" | "cards" | "json") => {
+    const currentRequest = ++requestId.current;
     setLoading(true);
     setError(null);
     const start = performance.now();
@@ -66,11 +70,12 @@ export default function Home() {
     try {
       // Per Milestone 3 constraint: GIS Map must strictly query /api/weather
       const endpoint =
-        mode === "map" || source === "supabase_db"
+        mode === "map" || source === "sqlite_db"
           ? "/api/weather?limit=500"
           : "/api/cwa?limit=100";
 
       const res = await fetch(endpoint);
+      if (currentRequest !== requestId.current) return;
       const elapsed = Math.round(performance.now() - start);
       setFetchLatency(elapsed);
 
@@ -84,33 +89,19 @@ export default function Home() {
         throw new Error(json.error || "Failed to load data");
       }
 
-      const items: WeatherStationGIS[] = (json.stations || []).map((s: any) => ({
-        station_id: s.station_id || s.stationId,
-        station_name: s.station_name || s.stationName,
-        county_name: s.county_name || s.countyName,
-        town_name: s.town_name || s.townName || null,
-        latitude: s.latitude !== null && s.latitude !== undefined ? Number(s.latitude) : null,
-        longitude: s.longitude !== null && s.longitude !== undefined ? Number(s.longitude) : null,
-        altitude: s.altitude !== null && s.altitude !== undefined ? Number(s.altitude) : null,
-        obs_time: s.obs_time || s.obsTime || null,
-        weather: s.weather || "正常",
-        air_temperature: s.air_temperature !== null && s.air_temperature !== undefined ? Number(s.air_temperature) : (s.airTemperature !== null && s.airTemperature !== undefined ? Number(s.airTemperature) : null),
-        relative_humidity: s.relative_humidity !== null && s.relative_humidity !== undefined ? Number(s.relative_humidity) : (s.relativeHumidity !== null && s.relativeHumidity !== undefined ? Number(s.relativeHumidity) : null),
-        precipitation: s.precipitation !== null && s.precipitation !== undefined ? Number(s.precipitation) : null,
-        wind_speed: s.wind_speed !== null && s.wind_speed !== undefined ? Number(s.wind_speed) : (s.windSpeed !== null && s.windSpeed !== undefined ? Number(s.windSpeed) : null),
-        wind_direction: s.wind_direction !== null && s.wind_direction !== undefined ? Number(s.wind_direction) : (s.windDirection !== null && s.windDirection !== undefined ? Number(s.windDirection) : null),
-        air_pressure: s.air_pressure !== null && s.air_pressure !== undefined ? Number(s.air_pressure) : (s.airPressure !== null && s.airPressure !== undefined ? Number(s.airPressure) : null),
-        uv_index: s.uv_index !== null && s.uv_index !== undefined ? Number(s.uv_index) : (s.uvIndex !== null && s.uvIndex !== undefined ? Number(s.uvIndex) : null),
-      }));
-
+      if (currentRequest !== requestId.current) return;
+      const items: WeatherStationGIS[] = json.stations || [];
+      setLoadedSource(mode === "map" ? "sqlite_db" : source);
       setStations(items);
       if (items.length > 0) {
         setSelectedStation(items[0]);
       }
-    } catch (err: any) {
-      setError(err.message || "Failed to fetch weather observations");
+    } catch (err: unknown) {
+      if (currentRequest !== requestId.current) return;
+      setStations([]);
+      setError(err instanceof Error ? err.message : "Failed to fetch weather observations");
     } finally {
-      setLoading(false);
+      if (currentRequest === requestId.current) setLoading(false);
     }
   }, []);
 
@@ -128,10 +119,10 @@ export default function Home() {
         await checkDbStatus();
         await loadData(dataSource, viewMode);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       setSyncResult({
         success: false,
-        error: err.message || "Sync request failed",
+        error: err instanceof Error ? err.message : "Sync request failed",
       });
     } finally {
       setSyncing(false);
@@ -139,11 +130,14 @@ export default function Home() {
   };
 
   useEffect(() => {
-    checkDbStatus();
+    void Promise.resolve().then(checkDbStatus);
   }, [checkDbStatus]);
 
   useEffect(() => {
-    loadData(dataSource, viewMode);
+    let active = true;
+    void Promise.resolve().then(() => { if (active) void loadData(dataSource, viewMode); });
+    const requests = requestId;
+    return () => { active = false; requests.current++; };
   }, [dataSource, viewMode, loadData]);
 
   const counties = useMemo(() => {
@@ -155,6 +149,7 @@ export default function Home() {
   }, [stations]);
 
   const filteredStations = useMemo(() => {
+    if (loadedSource !== (viewMode === "map" ? "sqlite_db" : dataSource)) return [];
     return stations.filter((s) => {
       const matchesCounty =
         selectedCounty === "全部" || s.county_name === selectedCounty;
@@ -167,7 +162,7 @@ export default function Home() {
         s.county_name.toLowerCase().includes(query);
       return matchesCounty && matchesSearch;
     });
-  }, [stations, selectedCounty, search]);
+  }, [stations, selectedCounty, search, loadedSource, viewMode, dataSource]);
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 p-4 sm:p-8">
@@ -190,7 +185,7 @@ export default function Home() {
               Taiwan CWA Weather GIS
             </h1>
             <p className="text-slate-400 text-sm mt-1">
-              臺灣氣象 GIS 空間圖台與地理資訊觀測 (GIS Visualization backed by PostgreSQL /api/weather)
+              臺灣氣象 GIS 空間圖台與地理資訊觀測 (GIS Visualization backed by SQLite /api/weather)
             </p>
           </div>
 
@@ -247,14 +242,14 @@ export default function Home() {
                   CWA 即時
                 </button>
                 <button
-                  onClick={() => setDataSource("supabase_db")}
+                  onClick={() => setDataSource("sqlite_db")}
                   className={`px-2.5 py-1 text-[11px] font-medium rounded-lg transition-colors ${
-                    dataSource === "supabase_db"
+                    dataSource === "sqlite_db"
                       ? "bg-indigo-600 text-white"
                       : "text-slate-400 hover:text-white"
                   }`}
                 >
-                  PostgreSQL
+                  SQLite
                 </button>
               </div>
             )}
@@ -268,7 +263,7 @@ export default function Home() {
               <span>🛠️ 開發與管理工具 (Development / Admin Tooling)</span>
               <span className="text-slate-500">|</span>
               <span className={dbAvailable ? "text-emerald-400" : "text-amber-400"}>
-                {dbAvailable ? "● PostgreSQL 資料庫已連線" : "○ 未設定 DATABASE_URL"}
+                {dbAvailable ? "● SQLite 資料庫已連線" : "○ SQLite 尚未連線"}
               </span>
             </div>
             <button
@@ -284,7 +279,7 @@ export default function Home() {
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
                   <p className="text-slate-300 font-medium">
-                    氣象資料庫同步管道 (CWA O-A0003-001 → PostgreSQL)
+                    氣象資料庫同步管道 (CWA O-A0003-001 → SQLite)
                   </p>
                   <p className="text-slate-500 text-[11px] mt-0.5">
                     觸發 <code className="text-indigo-300">POST /api/sync</code>，寫入測站詮釋資料並新增觀測紀錄 (具防重複機制)。
@@ -380,9 +375,7 @@ export default function Home() {
               <p className="font-semibold text-rose-200">後端資料查詢異常</p>
               <p className="text-xs mt-1 text-rose-300/80">{error}</p>
               <p className="text-xs mt-2 text-slate-400">
-                GIS 地圖嚴格依賴 <code className="text-indigo-300">GET /api/weather</code>。請確認在{" "}
-                <code className="text-slate-200">.env.local</code> 中已設定有效的{" "}
-                <code className="text-indigo-300">DATABASE_URL</code>。
+                請確認本機 data 資料夾可寫入，再重試查詢或執行資料同步。
               </p>
             </div>
           </div>
@@ -429,7 +422,7 @@ export default function Home() {
           <div className="space-y-3">
             <MapWrapper
               stations={filteredStations}
-              loading={loading}
+              loading={loading || loadedSource !== "sqlite_db" && !error}
               error={error}
               onRetry={() => loadData(dataSource, "map")}
               selectedStationId={selectedStation?.station_id}

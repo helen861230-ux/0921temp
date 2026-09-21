@@ -29,12 +29,12 @@ export async function GET(request: Request) {
       stations: filteredStations,
       rawSample: includeRaw ? result.rawStations.slice(0, 3) : undefined,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Failed to fetch CWA data:", error);
     return NextResponse.json(
       {
         success: false,
-        error: error.message || "Unknown error occurred while querying CWA API",
+        error: (error instanceof Error ? error.message : null) || "Unknown error occurred while querying CWA API",
       },
       { status: 500 }
     );

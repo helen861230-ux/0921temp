@@ -97,8 +97,8 @@ function parseNum(val: string | undefined): number | null {
   if (val === undefined || val === null || val === "" || val === "-99" || val === "-999" || val === "-99.0") {
     return null;
   }
-  const n = parseFloat(val);
-  return isNaN(n) ? null : n;
+  const n = Number(val);
+  return !Number.isFinite(n) || n === -99 || n === -999 ? null : n;
 }
 
 export interface NormalizedStationData {
@@ -126,7 +126,7 @@ export interface NormalizedStationData {
 export function normalizeStationData(raw: CWAStationRaw): NormalizedStationData {
   const wgs84 = raw.GeoInfo.Coordinates?.find(
     (c) => c.CoordinateName === "WGS84"
-  ) || raw.GeoInfo.Coordinates?.[0];
+  );
 
   return {
     station_id: raw.StationId,
@@ -167,19 +167,21 @@ export async function fetchCWAWeatherStations(apiKey?: string, options?: { limit
   }
 
   const res = await fetch(url.toString(), {
+    signal: AbortSignal.timeout(20000),
     headers: {
       Accept: "application/json",
     },
-    // Next.js fetch revalidation (cache for 60 seconds)
-    next: { revalidate: 60 },
-  });
+    cache: "no-store",
+  }).catch(() => { throw new Error("無法連線 CWA，請檢查網路後重試"); });
 
   if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`CWA API request failed with status ${res.status}: ${errText}`);
+    throw new Error(`CWA API request failed with status ${res.status}`);
   }
 
   const data = await res.json();
+  if (!(data?.success === "true" || data?.success === true) || !Array.isArray(data?.records?.Station)) {
+    throw new Error("CWA 回應格式不正確或查詢未成功");
+  }
   const rawStations: CWAStationRaw[] = data?.records?.Station || [];
   const normalizedStations: NormalizedStationData[] = rawStations.map(normalizeStationData);
 

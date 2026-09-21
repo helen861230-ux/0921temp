@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useState, useMemo } from "react";
 import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
 import L from "leaflet";
+import { hasValidCoordinates } from "@/lib/coordinates";
 import "leaflet/dist/leaflet.css";
 
 export interface WeatherStationGIS {
@@ -100,21 +101,11 @@ export default function TaiwanWeatherMap({
 }: TaiwanWeatherMapProps) {
   const [activeStation, setActiveStation] = useState<WeatherStationGIS | null>(null);
 
-  // Filter valid coordinates (Taiwan bounding box: lat 20.5~26.5, lon 118.0~123.0)
+  // Validate WGS84 coordinates while preserving offshore stations.
   const { validStations, invalidCount } = useMemo(() => {
     let invalid = 0;
     const valid = stations.filter((s) => {
-      const lat = s.latitude;
-      const lon = s.longitude;
-      const isValid =
-        typeof lat === "number" &&
-        typeof lon === "number" &&
-        !isNaN(lat) &&
-        !isNaN(lon) &&
-        lat >= 20.0 &&
-        lat <= 27.0 &&
-        lon >= 118.0 &&
-        lon <= 123.5;
+      const isValid = hasValidCoordinates(s);
 
       if (!isValid) {
         invalid++;
@@ -154,7 +145,7 @@ export default function TaiwanWeatherMap({
             />
           </svg>
           <span className="text-sm font-medium text-slate-300">
-            載入 PostgreSQL 測站空間資料...
+            載入 SQLite 測站空間資料...
           </span>
         </div>
       )}
@@ -183,21 +174,21 @@ export default function TaiwanWeatherMap({
         <div className="absolute inset-0 z-[1000] bg-slate-950/90 flex flex-col items-center justify-center p-6 text-center">
           <div className="text-indigo-400 text-3xl mb-2">📡</div>
           <h3 className="text-base font-bold text-white mb-1">
-            PostgreSQL 資料庫目前尚無測站觀測資料
+            目前沒有符合篩選條件的有效測站
           </h3>
           <p className="text-xs text-slate-400 max-w-md mb-4">
-            請點選上方開發管理工具的「立即執行寫入同步 (POST /api/sync)」以從 CWA 擷取並儲存即時氣象資料。
+            請先清除搜尋或縣市篩選；若資料庫尚無資料，點選上方開發管理工具的「立即執行寫入同步 (POST /api/sync)」以從 CWA 擷取並儲存即時氣象資料。
           </p>
         </div>
       )}
 
       {/* Map Control Bar / Legend */}
-      <div className="absolute top-3 right-3 z-[900] bg-slate-900/90 backdrop-blur-md border border-slate-800 p-3 rounded-xl shadow-lg text-xs space-y-2 pointer-events-auto">
+      <div className="absolute bottom-6 left-3 z-[900] bg-slate-900/90 backdrop-blur-md border border-slate-800 p-3 rounded-xl shadow-lg text-xs space-y-2 pointer-events-auto">
         <div className="flex items-center justify-between gap-4 font-semibold text-white">
           <span>氣候地圖圖例</span>
           <span className="text-[10px] text-slate-400 font-normal">氣溫 (°C)</span>
         </div>
-        <div className="flex items-center gap-1.5 text-[10px]">
+        <div className="flex flex-wrap max-w-[260px] items-center gap-1.5 text-[10px]">
           <span className="flex items-center gap-1 text-blue-400">
             <span className="w-2.5 h-2.5 rounded-full bg-blue-500" /> &lt;15°
           </span>
@@ -245,6 +236,8 @@ export default function TaiwanWeatherMap({
           return (
             <Marker
               key={station.station_id}
+              title={`${station.station_name} (${station.station_id})`}
+              alt={`${station.station_name} 氣象站`}
               position={[station.latitude!, station.longitude!]}
               icon={createStationMarkerIcon(station, isSelected)}
               eventHandlers={{

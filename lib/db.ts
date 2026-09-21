@@ -42,7 +42,6 @@ export interface StationLatestWeather extends WeatherStationRecord {
 
 // Global client singleton to avoid reopening SQLite file continuously
 declare global {
-  // eslint-disable-next-line no-var
   var _sqliteDb: Database.Database | undefined;
 }
 
@@ -52,12 +51,14 @@ export function getDbClient(): Database.Database {
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(dataDir, { recursive: true });
     }
-    const dbPath = path.join(dataDir, "weather.db");
+    const dbPath = process.env.SQLITE_PATH || path.join(dataDir, "weather.db");
     const db = new Database(dbPath);
     db.pragma("journal_mode = WAL");
     db.pragma("synchronous = NORMAL");
-    global._sqliteDb = db;
+    db.pragma("foreign_keys = ON");
+    db.pragma("busy_timeout = 5000");
     initDatabaseSchema(db);
+    global._sqliteDb = db;
   }
 
   return global._sqliteDb;
@@ -146,13 +147,13 @@ export function insertWeatherObservations(
   const db = getDbClient();
 
   const insertStmt = db.prepare(`
-    INSERT OR IGNORE INTO weather_observations (
+    INSERT INTO weather_observations (
       station_id, obs_time, weather, air_temperature, relative_humidity,
       precipitation, wind_speed, wind_direction, air_pressure, uv_index, created_at
     ) VALUES (
       @station_id, @obs_time, @weather, @air_temperature, @relative_humidity,
       @precipitation, @wind_speed, @wind_direction, @air_pressure, @uv_index, datetime('now')
-    )
+    ) ON CONFLICT (station_id, obs_time) DO NOTHING
   `);
 
   let newlyInserted = 0;

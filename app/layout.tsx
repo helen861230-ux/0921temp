@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Taiwan CWA Weather GIS - API Inspector",
+  title: "Taiwan CWA Weather GIS",
   description: "Taiwan Central Weather Administration Open Data API (O-A0003-001) Integration & GIS Platform",
 };
 

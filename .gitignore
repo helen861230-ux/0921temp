@@ -46,3 +46,7 @@ next-env.d.ts
 *.db-wal
 *.sqlite
 data/
+
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
