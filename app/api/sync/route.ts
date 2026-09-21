@@ -8,28 +8,17 @@ import {
   WeatherObservationRecord,
 } from "@/lib/db";
 
-// POST /api/sync: Write-only synchronization endpoint
+// POST /api/sync: Write-only synchronization endpoint (SQLite backend)
 export async function POST(request: Request) {
   const startTime = performance.now();
 
-  if (!process.env.DATABASE_URL) {
-    return NextResponse.json(
-      {
-        success: false,
-        error: "DATABASE_URL is not set. Please configure DATABASE_URL in .env.local",
-      },
-      { status: 400 }
-    );
-  }
-
   try {
-    // Optional limit query or payload
     const { searchParams } = new URL(request.url);
     const limitParam = searchParams.get("limit");
     const limit = limitParam ? parseInt(limitParam, 10) : undefined;
 
-    // 1. Ensure database schema and unique constraint exist
-    await initDatabaseSchema();
+    // 1. Ensure SQLite database schema and constraints exist
+    initDatabaseSchema();
 
     // 2. Fetch latest data from CWA dataset O-A0003-001
     const cwaResult = await fetchCWAWeatherStations(process.env.CWA_API_KEY, {
@@ -67,12 +56,10 @@ export async function POST(request: Request) {
       }));
 
     // 5. Upsert stations into weather_stations
-    const stationsUpsertedCount = await upsertWeatherStations(stationsToUpsert);
+    const stationsUpsertedCount = upsertWeatherStations(stationsToUpsert);
 
-    // 6. Insert observations with ON CONFLICT DO NOTHING (idempotent, skips duplicates)
-    const observationsInsertedCount = await insertWeatherObservations(
-      observationsToInsert
-    );
+    // 6. Insert observations with ON CONFLICT DO NOTHING (prevents duplicates)
+    const observationsInsertedCount = insertWeatherObservations(observationsToInsert);
 
     const duplicatesSkipped =
       observationsToInsert.length - observationsInsertedCount;
@@ -80,7 +67,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: true,
-      message: "CWA weather data synchronized to Supabase PostgreSQL",
+      message: "CWA weather data synchronized to SQLite database",
+      engine: "sqlite",
       stations_upserted: stationsUpsertedCount,
       observations_inserted: observationsInsertedCount,
       duplicates_skipped: duplicatesSkipped,
@@ -88,11 +76,11 @@ export async function POST(request: Request) {
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {
-    console.error("Database sync failed:", error);
+    console.error("SQLite database sync failed:", error);
     return NextResponse.json(
       {
         success: false,
-        error: error.message || "Failed to synchronize weather data to database",
+        error: error.message || "Failed to synchronize weather data to SQLite database",
       },
       { status: 500 }
     );

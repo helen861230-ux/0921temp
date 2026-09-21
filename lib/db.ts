@@ -1,4 +1,6 @@
-import postgres from "postgres";
+import Database from "better-sqlite3";
+import fs from "node:fs";
+import path from "node:path";
 
 export interface WeatherStationRecord {
   station_id: string;
@@ -38,158 +40,150 @@ export interface StationLatestWeather extends WeatherStationRecord {
   uv_index: number | null;
 }
 
-// Global client singleton to avoid exhausting connections in development hot reload
+// Global client singleton to avoid reopening SQLite file continuously
 declare global {
   // eslint-disable-next-line no-var
-  var _sqlClient: postgres.Sql | undefined;
+  var _sqliteDb: Database.Database | undefined;
 }
 
-export function getDbClient(): postgres.Sql {
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) {
-    throw new Error(
-      "Missing DATABASE_URL in environment. Please add DATABASE_URL=<supabase_postgresql_connection_string> to .env.local"
-    );
+export function getDbClient(): Database.Database {
+  if (!global._sqliteDb) {
+    const dataDir = path.join(process.cwd(), "data");
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    const dbPath = path.join(dataDir, "weather.db");
+    const db = new Database(dbPath);
+    db.pragma("journal_mode = WAL");
+    db.pragma("synchronous = NORMAL");
+    global._sqliteDb = db;
+    initDatabaseSchema(db);
   }
 
-  if (!global._sqlClient) {
-    global._sqlClient = postgres(databaseUrl, {
-      ssl: databaseUrl.includes("localhost") ? false : "require",
-      max: 10,
-      idle_timeout: 20,
-      connect_timeout: 10,
-    });
-  }
-
-  return global._sqlClient;
+  return global._sqliteDb;
 }
 
 /**
- * Initializes tables and indexes if they do not already exist.
+ * Initializes SQLite tables and indexes.
  */
-export async function initDatabaseSchema() {
-  const sql = getDbClient();
+export function initDatabaseSchema(dbInstance?: Database.Database) {
+  const db = dbInstance || getDbClient();
 
-  await sql`
+  db.exec(`
     CREATE TABLE IF NOT EXISTS weather_stations (
-      station_id VARCHAR(32) PRIMARY KEY,
-      station_name VARCHAR(128) NOT NULL,
-      county_name VARCHAR(64) NOT NULL,
-      town_name VARCHAR(64),
-      latitude DOUBLE PRECISION,
-      longitude DOUBLE PRECISION,
-      altitude DOUBLE PRECISION,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `;
+      station_id TEXT PRIMARY KEY,
+      station_name TEXT NOT NULL,
+      county_name TEXT NOT NULL,
+      town_name TEXT,
+      latitude REAL,
+      longitude REAL,
+      altitude REAL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
 
-  await sql`
     CREATE TABLE IF NOT EXISTS weather_observations (
-      id BIGSERIAL PRIMARY KEY,
-      station_id VARCHAR(32) NOT NULL REFERENCES weather_stations(station_id) ON DELETE CASCADE,
-      obs_time TIMESTAMPTZ NOT NULL,
-      weather VARCHAR(64),
-      air_temperature DOUBLE PRECISION,
-      relative_humidity DOUBLE PRECISION,
-      precipitation DOUBLE PRECISION,
-      wind_speed DOUBLE PRECISION,
-      wind_direction DOUBLE PRECISION,
-      air_pressure DOUBLE PRECISION,
-      uv_index DOUBLE PRECISION,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      station_id TEXT NOT NULL REFERENCES weather_stations(station_id) ON DELETE CASCADE,
+      obs_time TEXT NOT NULL,
+      weather TEXT,
+      air_temperature REAL,
+      relative_humidity REAL,
+      precipitation REAL,
+      wind_speed REAL,
+      wind_direction REAL,
+      air_pressure REAL,
+      uv_index REAL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
       CONSTRAINT uq_station_obs_time UNIQUE (station_id, obs_time)
-    )
-  `;
+    );
 
-  await sql`
-    CREATE INDEX IF NOT EXISTS idx_weather_stations_county ON weather_stations(county_name)
-  `;
-
-  await sql`
-    CREATE INDEX IF NOT EXISTS idx_weather_observations_station_time ON weather_observations(station_id, obs_time DESC)
-  `;
-
-  await sql`
-    CREATE INDEX IF NOT EXISTS idx_weather_observations_obs_time ON weather_observations(obs_time DESC)
-  `;
+    CREATE INDEX IF NOT EXISTS idx_weather_stations_county ON weather_stations(county_name);
+    CREATE INDEX IF NOT EXISTS idx_weather_observations_station_time ON weather_observations(station_id, obs_time DESC);
+    CREATE INDEX IF NOT EXISTS idx_weather_observations_obs_time ON weather_observations(obs_time DESC);
+  `);
 }
 
 /**
- * Bulk upserts weather stations.
+ * Bulk upserts weather stations inside an atomic transaction.
  */
-export async function upsertWeatherStations(stations: WeatherStationRecord[]) {
+export function upsertWeatherStations(stations: WeatherStationRecord[]): number {
   if (stations.length === 0) return 0;
-  const sql = getDbClient();
+  const db = getDbClient();
 
-  // Perform batch upsert
-  await sql`
-    INSERT INTO weather_stations ${sql(
-      stations,
-      "station_id",
-      "station_name",
-      "county_name",
-      "town_name",
-      "latitude",
-      "longitude",
-      "altitude"
-    )}
+  const insertStmt = db.prepare(`
+    INSERT INTO weather_stations (
+      station_id, station_name, county_name, town_name, latitude, longitude, altitude, updated_at
+    ) VALUES (
+      @station_id, @station_name, @county_name, @town_name, @latitude, @longitude, @altitude, datetime('now')
+    )
     ON CONFLICT (station_id) DO UPDATE SET
-      station_name = EXCLUDED.station_name,
-      county_name = EXCLUDED.county_name,
-      town_name = EXCLUDED.town_name,
-      latitude = EXCLUDED.latitude,
-      longitude = EXCLUDED.longitude,
-      altitude = EXCLUDED.altitude,
-      updated_at = NOW()
-  `;
+      station_name = excluded.station_name,
+      county_name = excluded.county_name,
+      town_name = excluded.town_name,
+      latitude = excluded.latitude,
+      longitude = excluded.longitude,
+      altitude = excluded.altitude,
+      updated_at = datetime('now')
+  `);
 
+  const runBatch = db.transaction((rows: WeatherStationRecord[]) => {
+    for (const row of rows) {
+      insertStmt.run(row);
+    }
+  });
+
+  runBatch(stations);
   return stations.length;
 }
 
 /**
- * Bulk inserts weather observations.
- * ON CONFLICT (station_id, obs_time) DO NOTHING guarantees idempotency (no duplicates).
+ * Bulk inserts weather observations with ON CONFLICT DO NOTHING (prevents duplicates).
  */
-export async function insertWeatherObservations(
+export function insertWeatherObservations(
   observations: WeatherObservationRecord[]
-) {
+): number {
   if (observations.length === 0) return 0;
-  const sql = getDbClient();
+  const db = getDbClient();
 
-  const inserted = await sql`
-    INSERT INTO weather_observations ${sql(
-      observations,
-      "station_id",
-      "obs_time",
-      "weather",
-      "air_temperature",
-      "relative_humidity",
-      "precipitation",
-      "wind_speed",
-      "wind_direction",
-      "air_pressure",
-      "uv_index"
-    )}
-    ON CONFLICT (station_id, obs_time) DO NOTHING
-    RETURNING id
-  `;
+  const insertStmt = db.prepare(`
+    INSERT OR IGNORE INTO weather_observations (
+      station_id, obs_time, weather, air_temperature, relative_humidity,
+      precipitation, wind_speed, wind_direction, air_pressure, uv_index, created_at
+    ) VALUES (
+      @station_id, @obs_time, @weather, @air_temperature, @relative_humidity,
+      @precipitation, @wind_speed, @wind_direction, @air_pressure, @uv_index, datetime('now')
+    )
+  `);
 
-  return inserted.length;
+  let newlyInserted = 0;
+  const runBatch = db.transaction((rows: WeatherObservationRecord[]) => {
+    for (const row of rows) {
+      const info = insertStmt.run(row);
+      if (info.changes > 0) {
+        newlyInserted += info.changes;
+      }
+    }
+  });
+
+  runBatch(observations);
+  return newlyInserted;
 }
 
 /**
- * Minimal query for latest weather observations stored in the database.
+ * Minimal query for latest weather observations stored in SQLite.
  */
-export async function queryLatestWeather(options?: {
+export function queryLatestWeather(options?: {
   county_name?: string;
   station_id?: string;
   limit?: number;
-}): Promise<StationLatestWeather[]> {
-  const sql = getDbClient();
-  const limit = options?.limit || 100;
+}): StationLatestWeather[] {
+  const db = getDbClient();
+  const limit = options?.limit || 500;
+  const county = options?.county_name || null;
+  const stationId = options?.station_id || null;
 
-  let query = sql`
-    SELECT DISTINCT ON (s.station_id)
+  const stmt = db.prepare(`
+    SELECT
       s.station_id,
       s.station_name,
       s.county_name,
@@ -209,43 +203,47 @@ export async function queryLatestWeather(options?: {
       o.uv_index
     FROM weather_stations s
     LEFT JOIN weather_observations o ON s.station_id = o.station_id
-    WHERE 1=1
-  `;
+      AND o.obs_time = (
+        SELECT MAX(o2.obs_time)
+        FROM weather_observations o2
+        WHERE o2.station_id = s.station_id
+      )
+    WHERE (:county IS NULL OR s.county_name = :county)
+      AND (:stationId IS NULL OR s.station_id = :stationId)
+    ORDER BY s.station_id
+    LIMIT :limit
+  `);
 
-  if (options?.county_name) {
-    query = sql`${query} AND s.county_name = ${options.county_name}`;
-  }
-
-  if (options?.station_id) {
-    query = sql`${query} AND s.station_id = ${options.station_id}`;
-  }
-
-  query = sql`
-    ${query}
-    ORDER BY s.station_id, o.obs_time DESC NULLS LAST
-    LIMIT ${limit}
-  `;
-
-  const rows = await query;
-  return rows as unknown as StationLatestWeather[];
+  return stmt.all({
+    county,
+    stationId,
+    limit,
+  }) as StationLatestWeather[];
 }
 
 /**
  * Database health and statistics check.
  */
-export async function getDatabaseStats() {
-  const sql = getDbClient();
+export function getDatabaseStats() {
+  const db = getDbClient();
 
-  const [stationsCount] = await sql`SELECT COUNT(*)::int AS count FROM weather_stations`;
-  const [observationsCount] = await sql`SELECT COUNT(*)::int AS count FROM weather_observations`;
-  const [latestObs] = await sql`
-    SELECT obs_time FROM weather_observations ORDER BY obs_time DESC LIMIT 1
-  `;
+  const stationsCountRow = db
+    .prepare("SELECT COUNT(*) AS count FROM weather_stations")
+    .get() as { count: number };
+
+  const observationsCountRow = db
+    .prepare("SELECT COUNT(*) AS count FROM weather_observations")
+    .get() as { count: number };
+
+  const latestObsRow = db
+    .prepare("SELECT obs_time FROM weather_observations ORDER BY obs_time DESC LIMIT 1")
+    .get() as { obs_time: string | null } | undefined;
 
   return {
     connected: true,
-    stations_count: stationsCount?.count || 0,
-    observations_count: observationsCount?.count || 0,
-    latest_obs_time: latestObs?.obs_time || null,
+    engine: "sqlite",
+    stations_count: stationsCountRow?.count || 0,
+    observations_count: observationsCountRow?.count || 0,
+    latest_obs_time: latestObsRow?.obs_time || null,
   };
 }

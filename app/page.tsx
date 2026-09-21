@@ -1,25 +1,8 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
-
-interface WeatherStationItem {
-  station_id: string;
-  station_name: string;
-  county_name: string;
-  town_name: string | null;
-  latitude: number | null;
-  longitude: number | null;
-  altitude: number | null;
-  obs_time: string | null;
-  weather: string | null;
-  air_temperature: number | null;
-  relative_humidity: number | null;
-  precipitation: number | null;
-  wind_speed: number | null;
-  wind_direction: number | null;
-  air_pressure: number | null;
-  uv_index: number | null;
-}
+import { useEffect, useState, useMemo, useCallback } from "react";
+import MapWrapper from "@/components/MapWrapper";
+import type { WeatherStationGIS } from "@/components/TaiwanWeatherMap";
 
 interface DatabaseStats {
   connected: boolean;
@@ -39,14 +22,14 @@ interface SyncResult {
 }
 
 export default function Home() {
-  const [dataSource, setDataSource] = useState<"cwa_live" | "supabase_db">("cwa_live");
-  const [stations, setStations] = useState<WeatherStationItem[]>([]);
+  const [viewMode, setViewMode] = useState<"map" | "cards" | "json">("map");
+  const [dataSource, setDataSource] = useState<"cwa_live" | "supabase_db">("supabase_db");
+  const [stations, setStations] = useState<WeatherStationGIS[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState<string>("");
   const [selectedCounty, setSelectedCounty] = useState<string>("全部");
-  const [selectedStation, setSelectedStation] = useState<WeatherStationItem | null>(null);
-  const [viewMode, setViewMode] = useState<"cards" | "json">("cards");
+  const [selectedStation, setSelectedStation] = useState<WeatherStationGIS | null>(null);
   const [fetchLatency, setFetchLatency] = useState<number | null>(null);
 
   // Admin / Dev Tooling State
@@ -57,7 +40,7 @@ export default function Home() {
   const [showAdminTools, setShowAdminTools] = useState<boolean>(true);
 
   // Check Database Status
-  const checkDbStatus = async () => {
+  const checkDbStatus = useCallback(async () => {
     try {
       const res = await fetch("/api/weather?stats=true");
       if (res.ok) {
@@ -72,19 +55,20 @@ export default function Home() {
     } catch {
       setDbAvailable(false);
     }
-  };
+  }, []);
 
-  // Fetch weather data based on current data source
-  const loadData = async (source: "cwa_live" | "supabase_db") => {
+  // Fetch weather data. For GIS map, strictly query /api/weather.
+  const loadData = useCallback(async (source: "cwa_live" | "supabase_db", mode: "map" | "cards" | "json") => {
     setLoading(true);
     setError(null);
     const start = performance.now();
 
     try {
+      // Per Milestone 3 constraint: GIS Map must strictly query /api/weather
       const endpoint =
-        source === "cwa_live"
-          ? "/api/cwa?limit=100"
-          : "/api/weather?limit=100";
+        mode === "map" || source === "supabase_db"
+          ? "/api/weather?limit=500"
+          : "/api/cwa?limit=100";
 
       const res = await fetch(endpoint);
       const elapsed = Math.round(performance.now() - start);
@@ -100,24 +84,23 @@ export default function Home() {
         throw new Error(json.error || "Failed to load data");
       }
 
-      // Consistent snake_case normalization
-      const items: WeatherStationItem[] = (json.stations || []).map((s: any) => ({
+      const items: WeatherStationGIS[] = (json.stations || []).map((s: any) => ({
         station_id: s.station_id || s.stationId,
         station_name: s.station_name || s.stationName,
         county_name: s.county_name || s.countyName,
         town_name: s.town_name || s.townName || null,
-        latitude: s.latitude ?? null,
-        longitude: s.longitude ?? null,
-        altitude: s.altitude ?? null,
+        latitude: s.latitude !== null && s.latitude !== undefined ? Number(s.latitude) : null,
+        longitude: s.longitude !== null && s.longitude !== undefined ? Number(s.longitude) : null,
+        altitude: s.altitude !== null && s.altitude !== undefined ? Number(s.altitude) : null,
         obs_time: s.obs_time || s.obsTime || null,
         weather: s.weather || "正常",
-        air_temperature: s.air_temperature ?? s.airTemperature ?? null,
-        relative_humidity: s.relative_humidity ?? s.relativeHumidity ?? null,
-        precipitation: s.precipitation ?? null,
-        wind_speed: s.wind_speed ?? s.windSpeed ?? null,
-        wind_direction: s.wind_direction ?? s.windDirection ?? null,
-        air_pressure: s.air_pressure ?? s.airPressure ?? null,
-        uv_index: s.uv_index ?? s.uvIndex ?? null,
+        air_temperature: s.air_temperature !== null && s.air_temperature !== undefined ? Number(s.air_temperature) : (s.airTemperature !== null && s.airTemperature !== undefined ? Number(s.airTemperature) : null),
+        relative_humidity: s.relative_humidity !== null && s.relative_humidity !== undefined ? Number(s.relative_humidity) : (s.relativeHumidity !== null && s.relativeHumidity !== undefined ? Number(s.relativeHumidity) : null),
+        precipitation: s.precipitation !== null && s.precipitation !== undefined ? Number(s.precipitation) : null,
+        wind_speed: s.wind_speed !== null && s.wind_speed !== undefined ? Number(s.wind_speed) : (s.windSpeed !== null && s.windSpeed !== undefined ? Number(s.windSpeed) : null),
+        wind_direction: s.wind_direction !== null && s.wind_direction !== undefined ? Number(s.wind_direction) : (s.windDirection !== null && s.windDirection !== undefined ? Number(s.windDirection) : null),
+        air_pressure: s.air_pressure !== null && s.air_pressure !== undefined ? Number(s.air_pressure) : (s.airPressure !== null && s.airPressure !== undefined ? Number(s.airPressure) : null),
+        uv_index: s.uv_index !== null && s.uv_index !== undefined ? Number(s.uv_index) : (s.uvIndex !== null && s.uvIndex !== undefined ? Number(s.uvIndex) : null),
       }));
 
       setStations(items);
@@ -125,11 +108,11 @@ export default function Home() {
         setSelectedStation(items[0]);
       }
     } catch (err: any) {
-      setError(err.message || "Failed to fetch weather data");
+      setError(err.message || "Failed to fetch weather observations");
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   // Trigger POST /api/sync (Write-Only Dev Tooling)
   const handleTriggerSync = async () => {
@@ -143,9 +126,7 @@ export default function Home() {
       setSyncResult(json);
       if (json.success) {
         await checkDbStatus();
-        if (dataSource === "supabase_db") {
-          await loadData("supabase_db");
-        }
+        await loadData(dataSource, viewMode);
       }
     } catch (err: any) {
       setSyncResult({
@@ -159,8 +140,11 @@ export default function Home() {
 
   useEffect(() => {
     checkDbStatus();
-    loadData(dataSource);
-  }, [dataSource]);
+  }, [checkDbStatus]);
+
+  useEffect(() => {
+    loadData(dataSource, viewMode);
+  }, [dataSource, viewMode, loadData]);
 
   const counties = useMemo(() => {
     const set = new Set<string>();
@@ -193,57 +177,98 @@ export default function Home() {
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                Milestone 2 Ready
+                Milestone 3 Live
               </span>
               <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-                Supabase PostgreSQL
+                Taiwan Weather GIS
               </span>
-              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20">
-                Dataset: O-A0003-001
+              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-sky-500/10 text-sky-400 border border-sky-500/20">
+                Leaflet + OpenStreetMap
               </span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white mt-2">
               Taiwan CWA Weather GIS
             </h1>
             <p className="text-slate-400 text-sm mt-1">
-              氣象資料持久化儲存與查詢服務 (PostgreSQL / Supabase Storage & Normalized Schema)
+              臺灣氣象 GIS 空間圖台與地理資訊觀測 (GIS Visualization backed by PostgreSQL /api/weather)
             </p>
           </div>
 
-          {/* Data Source Selector */}
-          <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 p-1.5 rounded-xl">
-            <span className="text-xs text-slate-400 px-2 font-medium">資料來源:</span>
-            <button
-              onClick={() => setDataSource("cwa_live")}
-              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                dataSource === "cwa_live"
-                  ? "bg-blue-600 text-white shadow"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              CWA 即時 API
-            </button>
-            <button
-              onClick={() => setDataSource("supabase_db")}
-              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                dataSource === "supabase_db"
-                  ? "bg-indigo-600 text-white shadow"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              Supabase 資料庫 (/api/weather)
-            </button>
+          {/* View Mode & Source Selectors */}
+          <div className="flex flex-wrap items-center gap-3">
+            {/* View Mode Tabs */}
+            <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 p-1.5 rounded-xl">
+              <button
+                onClick={() => setViewMode("map")}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${
+                  viewMode === "map"
+                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-500/20"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                <span>🗺️</span>
+                <span>GIS 地圖</span>
+              </button>
+              <button
+                onClick={() => setViewMode("cards")}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${
+                  viewMode === "cards"
+                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-500/20"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                <span>📋</span>
+                <span>測站卡片</span>
+              </button>
+              <button
+                onClick={() => setViewMode("json")}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${
+                  viewMode === "json"
+                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-500/20"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                <span>{`{ }`}</span>
+                <span>JSON</span>
+              </button>
+            </div>
+
+            {/* Non-map mode source switch */}
+            {viewMode !== "map" && (
+              <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 p-1 rounded-xl">
+                <button
+                  onClick={() => setDataSource("cwa_live")}
+                  className={`px-2.5 py-1 text-[11px] font-medium rounded-lg transition-colors ${
+                    dataSource === "cwa_live"
+                      ? "bg-blue-600 text-white"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  CWA 即時
+                </button>
+                <button
+                  onClick={() => setDataSource("supabase_db")}
+                  className={`px-2.5 py-1 text-[11px] font-medium rounded-lg transition-colors ${
+                    dataSource === "supabase_db"
+                      ? "bg-indigo-600 text-white"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  PostgreSQL
+                </button>
+              </div>
+            )}
           </div>
         </header>
 
-        {/* Development & Admin Tooling Panel (Milestone 2) */}
+        {/* Development & Admin Tooling Panel */}
         <section className="bg-slate-900/60 border border-indigo-900/40 rounded-xl overflow-hidden shadow-sm">
           <div className="flex items-center justify-between px-4 py-3 bg-indigo-950/20 border-b border-indigo-900/30">
             <div className="flex items-center gap-2 text-xs font-semibold text-indigo-300">
               <span>🛠️ 開發與管理工具 (Development / Admin Tooling)</span>
               <span className="text-slate-500">|</span>
               <span className={dbAvailable ? "text-emerald-400" : "text-amber-400"}>
-                {dbAvailable ? "● 資料庫已連線" : "○ 未設定 DATABASE_URL"}
+                {dbAvailable ? "● PostgreSQL 資料庫已連線" : "○ 未設定 DATABASE_URL"}
               </span>
             </div>
             <button
@@ -262,7 +287,7 @@ export default function Home() {
                     氣象資料庫同步管道 (CWA O-A0003-001 → PostgreSQL)
                   </p>
                   <p className="text-slate-500 text-[11px] mt-0.5">
-                    觸發 <code className="text-indigo-300">POST /api/sync</code>，寫入測站詮釋資料並新增觀測紀錄 (具冪等性防重複機制)。
+                    觸發 <code className="text-indigo-300">POST /api/sync</code>，寫入測站詮釋資料並新增觀測紀錄 (具防重複機制)。
                   </p>
                 </div>
                 <button
@@ -347,66 +372,23 @@ export default function Home() {
           )}
         </section>
 
-        {/* Status Metrics */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 shadow-sm">
-            <div className="text-xs font-medium text-slate-400">當前查詢來源</div>
-            <div className="mt-2 flex items-center gap-2">
-              <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 animate-pulse" />
-              <span className="text-base font-bold text-white">
-                {dataSource === "cwa_live" ? "CWA 即時 API" : "PostgreSQL 資料庫"}
-              </span>
-            </div>
-            <div className="text-xs text-slate-500 mt-1 font-mono truncate">
-              {dataSource === "cwa_live" ? "GET /api/cwa" : "GET /api/weather"}
-            </div>
-          </div>
-
-          <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 shadow-sm">
-            <div className="text-xs font-medium text-slate-400">已載入測站數</div>
-            <div className="mt-2 text-2xl font-bold text-white">
-              {loading ? "--" : `${stations.length} 站`}
-            </div>
-            <div className="text-xs text-slate-500 mt-1">
-              符合目前篩選: {filteredStations.length} 站
-            </div>
-          </div>
-
-          <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 shadow-sm">
-            <div className="text-xs font-medium text-slate-400">觀測時間戳記</div>
-            <div className="mt-2 text-sm font-semibold text-slate-200 truncate">
-              {stations[0]?.obs_time || "--"}
-            </div>
-            <div className="text-xs text-slate-500 mt-1">臺灣氣象觀測標準時間</div>
-          </div>
-
-          <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 shadow-sm">
-            <div className="text-xs font-medium text-slate-400">查詢回應延遲</div>
-            <div className="mt-2 text-2xl font-bold text-emerald-400">
-              {fetchLatency !== null ? `${fetchLatency} ms` : "--"}
-            </div>
-            <div className="text-xs text-slate-500 mt-1">Next.js API Handler</div>
-          </div>
-        </div>
-
         {/* Error Alert */}
         {error && (
           <div className="bg-rose-950/40 border border-rose-800 text-rose-300 p-4 rounded-xl flex items-start gap-3">
             <span className="text-lg">⚠️</span>
             <div>
-              <p className="font-semibold text-rose-200">資料讀取異常</p>
+              <p className="font-semibold text-rose-200">後端資料查詢異常</p>
               <p className="text-xs mt-1 text-rose-300/80">{error}</p>
-              {dataSource === "supabase_db" && (
-                <p className="text-xs mt-2 text-slate-400">
-                  若使用資料庫來源，請確認在 <code className="text-slate-200">.env.local</code> 中已填寫有效的{" "}
-                  <code className="text-indigo-300">DATABASE_URL</code>。
-                </p>
-              )}
+              <p className="text-xs mt-2 text-slate-400">
+                GIS 地圖嚴格依賴 <code className="text-indigo-300">GET /api/weather</code>。請確認在{" "}
+                <code className="text-slate-200">.env.local</code> 中已設定有效的{" "}
+                <code className="text-indigo-300">DATABASE_URL</code>。
+              </p>
             </div>
           </div>
         )}
 
-        {/* Controls and Filters */}
+        {/* Filters and Controls */}
         <div className="flex flex-col sm:flex-row gap-3 justify-between items-stretch sm:items-center bg-slate-900/40 border border-slate-800/80 p-3 rounded-xl">
           <div className="flex flex-wrap items-center gap-2">
             <input
@@ -429,32 +411,34 @@ export default function Home() {
             </select>
           </div>
 
-          <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800 self-start sm:self-auto">
-            <button
-              onClick={() => setViewMode("cards")}
-              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                viewMode === "cards"
-                  ? "bg-indigo-600 text-white"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              測站卡片檢視
-            </button>
-            <button
-              onClick={() => setViewMode("json")}
-              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                viewMode === "json"
-                  ? "bg-indigo-600 text-white"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              原始 JSON 檢視
-            </button>
+          <div className="text-xs text-slate-400 flex items-center gap-3">
+            <span>
+              資料來源端點:{" "}
+              <code className="text-indigo-300 font-mono">
+                {viewMode === "map" ? "/api/weather" : dataSource === "cwa_live" ? "/api/cwa" : "/api/weather"}
+              </code>
+            </span>
+            {fetchLatency !== null && (
+              <span className="text-emerald-400 font-mono">{fetchLatency}ms</span>
+            )}
           </div>
         </div>
 
-        {/* Content View */}
-        {viewMode === "cards" ? (
+        {/* View Mode Render */}
+        {viewMode === "map" && (
+          <div className="space-y-3">
+            <MapWrapper
+              stations={filteredStations}
+              loading={loading}
+              error={error}
+              onRetry={() => loadData(dataSource, "map")}
+              selectedStationId={selectedStation?.station_id}
+              onSelectStation={(st) => setSelectedStation(st)}
+            />
+          </div>
+        )}
+
+        {viewMode === "cards" && (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredStations.map((station) => {
               const isSelected = selectedStation?.station_id === station.station_id;
@@ -529,14 +513,16 @@ export default function Home() {
               );
             })}
           </div>
-        ) : (
+        )}
+
+        {viewMode === "json" && (
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 overflow-hidden">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800 text-xs text-slate-400 font-mono">
-              <span>{dataSource === "cwa_live" ? "GET /api/cwa" : "GET /api/weather"} Response</span>
-              <span>Total: {stations.length} Items</span>
+              <span>GET /api/weather Response Data</span>
+              <span>Total: {filteredStations.length} Stations</span>
             </div>
             <pre className="p-4 text-xs font-mono text-emerald-400/90 bg-slate-950 rounded-lg overflow-x-auto max-h-[600px]">
-              {JSON.stringify(stations, null, 2)}
+              {JSON.stringify(filteredStations, null, 2)}
             </pre>
           </div>
         )}
