@@ -39,6 +39,19 @@ class BackfillTests(unittest.TestCase):
             self.assertEqual(len(rows),1)
             self.assertEqual((rows[0]['mint'],rows[0]['maxt'],rows[0]['isPartial']),(23,30,0))
 
+    def test_stale_query_fields_show_recovery_message(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = Path(directory)/'test.db'
+            save_station_history([sample()], db)
+            legacy_rows = [{key: value for key, value in sample().items()
+                            if key in ('regionName', 'dataDate', 'mint', 'maxt')}]
+            with patch.dict(os.environ, {'FORECAST_DB_PATH': str(db)}), \
+                    patch('database.query_forecasts', return_value=legacy_rows):
+                app = AppTest.from_file(str(ROOT/'app.py'), default_timeout=30).run()
+                self.assertFalse(app.exception)
+                self.assertTrue(any('重新啟動 Streamlit' in item.value for item in app.warning))
+                self.assertFalse(app.dataframe)
+
     def test_history_ui_shows_all_days_and_provenance(self):
         with tempfile.TemporaryDirectory() as directory:
             db = Path(directory)/'test.db'

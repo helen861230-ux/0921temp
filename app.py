@@ -69,6 +69,12 @@ if total_days > 3660:
     st.warning('一次最多顯示 3660 天，請縮小日期範圍。')
     st.stop()
 rows = query_forecasts(region, db_path, start=start, end=end)
+if is_station_history and any(
+    not {'stationName', 'stationId', 'source', 'isPartial'}.issubset(row) for row in rows
+):
+    st.warning('歷史資料查詢欄位與目前版本不一致，請重新啟動 Streamlit，再重新整理頁面。')
+    st.code('python -m streamlit run app.py', language='bash')
+    st.stop()
 calendar = pd.DataFrame({'dataDate': pd.date_range(start, end).strftime('%Y-%m-%d')})
 columns = ['regionName', 'dataDate', 'mint', 'maxt'] + (['stationId', 'stationName', 'source', 'isPartial'] if is_station_history else [])
 frame = calendar.merge(pd.DataFrame(rows, columns=columns), on='dataDate', how='left')
