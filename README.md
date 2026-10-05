@@ -147,3 +147,36 @@ python -m unittest discover -s tests_python -v
 七天預報 UI 測試使用明確標示的 TEST 合成測試資料與獨立暫存資料庫，不會寫入正式 `data.db`。程式的真實預報功能需以可用的 CWA JSON 驗證資料來源。
 
 `.env*`、`.venv/`、`data.db`、`data/weather.db`、JSON／CSV 產物及金鑰均不提交。
+
+## 地圖與當日六區表格、CSV
+
+地圖區採左右並排：左側 Folium 地圖，右側為下拉選單指定日期的六區最低／最高溫及區間中點。更換日期會同步更新兩側；上方的單區歷史折線圖另依查詢範圍顯示。圓圈使用近似地區座標，藍色 <20°C、綠色 20–<25°C、黃色 25–30°C、紅色 >30°C。
+
+將目前 SQLite 中啟用的資料匯出為作業指定檔名：
+
+```sh
+python export_weather.py
+```
+
+輸出 `weather_data.csv`（UTF-8 BOM）。歷史資料保留 `dataKind=station_history`、測站、來源及 `isPartial`，不可當作七天預報。真正的預報 JSON 則使用 `python parse_weather.py` 產生六區七天 CSV，再以 `python database.py` 匯入。下載的 CSV、JSON 與資料庫不提交 GitHub，老師可依上述步驟重新產生。
+
+## SSL 憑證問題
+
+程式保持 HTTPS 憑證驗證。遇到 SSL 驗證失敗，先在虛擬環境更新憑證套件：
+
+```sh
+python -m pip install --upgrade certifi
+```
+
+若學校或公司的 HTTPS 代理需要自訂 CA，請向管理員取得可信任的 PEM 憑證組，並在執行前設定：
+
+```sh
+export REQUESTS_CA_BUNDLE="/absolute/path/to/trusted-ca-bundle.pem"
+python fetch_weather.py
+```
+
+不要使用 `verify=False` 跳過驗證。Python 3.9 系統環境可能出現 LibreSSL 警告，建議使用連結 OpenSSL 的 Python 3.11／3.12 重新建立虛擬環境。SSL 失敗及 HTTP 404 都會保留既有資料，不輸出含金鑰的錯誤網址。
+
+## 繳交限制
+
+2026-10-05 再次實測 F-A0010-001 的 REST 與 file API 均回傳 HTTP 404。目前可展示真實歷史觀測、日期連動地圖、六區表格、SQLite、CSV 與折線圖；尚不能宣稱已成功下載指定資料集的真實七天預報。需取得老師提供的同資料集 JSON，或由老師確認可用的替代資料來源，才能完成該項驗收。

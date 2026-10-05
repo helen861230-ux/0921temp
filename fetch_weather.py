@@ -25,8 +25,12 @@ def fetch_weather(output=RAW_PATH):
     for endpoint in ENDPOINTS:
         try:
             response = requests.get(endpoint, params={'Authorization': key, 'format': 'JSON'}, timeout=30)
+        except requests.exceptions.SSLError:
+            raise RuntimeError('SSL 憑證驗證失敗。請更新 certifi；若使用學校代理，將 REQUESTS_CA_BUNDLE 設為管理員提供的可信任 CA 憑證路徑。請勿關閉憑證驗證。') from None
         except requests.RequestException:
             raise RuntimeError('CWA 連線失敗，請檢查網路後重試。') from None
+        except OSError:
+            raise RuntimeError('無法讀取 CA 憑證，請確認 REQUESTS_CA_BUNDLE 路徑存在且可讀。') from None
         statuses.append(response.status_code)
         if response.status_code == 404:
             continue

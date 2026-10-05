@@ -129,7 +129,19 @@ for row in map_rows:
     folium.CircleMarker(location=REGION_COORDINATES[row['regionName']], radius=12, color='white', weight=2,
         fill=True, fill_color=color, fill_opacity=0.95, tooltip=f"{row['regionName']} · {mean:g} °C",
         popup=folium.Popup(f"{row['regionName']}<br>{row.get('stationName', '')} {row.get('source', '')}<br>Date: {row['dataDate']}<br>Min: {row['mint']:g} °C<br>Max: {row['maxt']:g} °C<br>區間中點: {mean:g} °C", max_width=240)).add_to(map_view)
-st_folium(map_view, height=470, use_container_width=True, returned_objects=[], key=f'forecast-map-{day}')
+map_col, daily_col = st.columns([1.5, 1])
+with map_col:
+    st_folium(map_view, height=470, use_container_width=True, returned_objects=[], key=f'forecast-map-{day}')
+with daily_col:
+    st.subheader(f'{day} 六區氣溫')
+    daily = pd.DataFrame(map_rows)
+    daily['區間中點 (°C)'] = (daily['mint'] + daily['maxt']) / 2
+    daily_display = daily[['regionName', 'mint', 'maxt', '區間中點 (°C)']].rename(
+        columns={'regionName': '地區', 'mint': '最低溫 (°C)', 'maxt': '最高溫 (°C)'})
+    st.dataframe(daily_display, hide_index=True, width='stretch')
+    st.caption('平均值以最高／最低溫的算術平均近似；不是全天逐時平均。')
+    st.download_button('下載當日六區 CSV', daily.to_csv(index=False).encode('utf-8-sig'),
+                       file_name=f'weather_{day}.csv', mime='text/csv')
 st.caption('🔵 <20°C　🟢 20–<25°C　🟡 25–30°C　🔴 >30°C')
 with st.expander('SQLite 查詢與作業流程'):
     table_name = 'TemperatureStationHistory' if is_station_history else ('TemperatureObservations' if is_observation else 'TemperatureForecasts')
