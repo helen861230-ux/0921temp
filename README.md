@@ -1,6 +1,6 @@
 # HW10-4 Taiwan Weather Web App
 
-使用 **Streamlit + Python sqlite3**，從本機 SQLite 查詢地區氣溫，以折線圖及表格呈現七天日期範圍。不需要部署公開網站。
+使用 **Streamlit + Python sqlite3**，從本機 SQLite 查詢地區氣溫，以折線圖及表格呈現 7／14／30 天或自訂日期範圍。不需要部署公開網站。
 
 ## 本機展示（必須先啟動）
 
@@ -15,11 +15,11 @@
 | Streamlit Web App | `app.py` |
 | 地區下拉選單 | 北部、中部、南部、東北部、東部、東南部；選單內容由 SQLite 查詢 |
 | 必須從 SQLite3 查詢 | `database.py` 使用 Python `sqlite3` 與參數化 SQL，UI 不呼叫 CWA API |
-| 一週折線圖 | 七天日期範圍，MaxT 紅線、MinT 藍線、點位與提示資訊；可選起始日期 |
+| 一週折線圖 | 預報模式七天；歷史觀測模式可選 7／14／30 天、全部紀錄或自訂日期，MaxT 紅線、MinT 藍線 |
 | 一週表格 | 與圖表使用同一批 SQL 查詢結果；提供 CSV 下載 |
 | 額外功能 | Folium 六區地圖、日期選擇、資料來源／匯入時間、空資料與過期提示 |
 
-**目前資料限制：** 依使用者指示沿用既有 `O-A0003-001` 測站觀測。這不是未來七天天氣預報。MinT／MaxT 是同區域、同日期之已存測站樣本的最小／最大氣溫，不代表完整全天極值。現有本機資料只有一天；七天表格的其他日期顯示空值，不內插、不補造、不重複數值。
+**目前資料限制：** 依使用者指示沿用既有 `O-A0003-001` 測站觀測。這不是未來七天天氣預報。MinT／MaxT 是同區域、同日期之已存測站樣本的最小／最大氣溫，不代表完整全天極值。目前本機保留 2026-09-21 與 2026-10-05 兩個觀測日期；其他尚未收集的日期顯示空值，不內插、不補造、不重複數值。
 
 Web App 已支援完整七天預報模式；若老師嚴格要求「真實未來一週預報」，仍需取得並匯入完整六區 × 七天 JSON。指定 `F-A0010-001` 的 API 本次實測回傳 404，因此不宣稱已完成真實七天預報擷取。
 
@@ -70,11 +70,28 @@ python database.py
 python -m streamlit run app.py --server.address 127.0.0.1
 ```
 
-若 API 不可用，可將老師提供的同格式 JSON 存為 `weather_data.json`，從解析步驟開始。解析會按地區與臺灣日期配對 MinT／MaxT，要求六區各七天完整資料；驗證失敗不覆蓋資料庫。預報與觀測採不同來源模式，每次匯入會原子替換展示資料，避免混用。
+若 API 不可用，可將老師提供的同格式 JSON 存為 `weather_data.json`，從解析步驟開始。解析會按地區與臺灣日期配對 MinT／MaxT，要求六區各七天完整資料；驗證失敗不覆蓋資料庫。預報與觀測分別儲存於不同資料表。預報匯入原子替換七天預報；觀測匯入持續累積日期，並合併同區同日樣本的最低／最高氣溫，不刪除既有觀測歷史。畫面顯示最後匯入的來源模式，不混用兩種資料。
+
+## 歷史觀測查詢
+
+1. 選擇地區，再選「最近 7 天／14 天／30 天／全部紀錄／自訂日期」。
+2. 最近天數以**資料庫最新觀測日期**為終點；頁面會標示已累積日期範圍。
+3. 圖表、表格和 CSV 使用相同日期範圍；地圖日期也限制在所選範圍。
+4. 沒有紀錄的日子顯示空值；開始日期晚於結束日期時提示修正。
+
+每天要累積新資料，請手動執行：
+
+```sh
+npm run sync
+python import_observations.py
+```
+
+這會下載當下的 CWA 測站觀測，無法回補過去未收集的日期；不需讓 Streamlit 一直開著，但要在需要收集資料時執行同步。目前未設定自動排程。SQLite 資料會在關閉終端機或重開機後保留。要取得未收集的過往日期，需另行取得歷史資料來源，不能由目前即時 API 推算。
 
 ## SQLite schema 與查詢
 
 `data.db` 的 `TemperatureForecasts`：`id INTEGER PRIMARY KEY`、`regionName TEXT`、`dataDate TEXT`、`mint REAL`、`maxt REAL`，另加地區／日期唯一約束與 `mint <= maxt` 檢查。
+`TemperatureObservations` 使用相同欄位，獨立保存累積的歷史觀測；舊版觀測資料會自動保留至此表。
 `ForecastMetadata` 記錄來源、資料類型及匯入時間。
 
 ```sql
@@ -91,6 +108,7 @@ ORDER BY dataDate;
 - `import_observations.py`：將原有觀測庫轉為六區日期統計。
 - `fetch_weather.py`、`parse_weather.py`：預報 JSON 擷取與解析。
 - `forecast_config.py`：路徑及六區位置。
+- `tests_python/test_history.py`：歷史累積、舊資料遷移、預報／觀測隔離、14／30 天與自訂範圍測試。
 - `tests_python/test_app.py`：地區切換、七天圖表／表格、缺值、空庫、重複匯入與 SQL 安全測試。
 - `docs/legacy-gis.md`：原 Next.js 即時地圖操作說明；原程式仍保留。
 

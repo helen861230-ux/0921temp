@@ -18,6 +18,15 @@ CREATE TABLE IF NOT EXISTS TemperatureForecasts (
     UNIQUE(regionName, dataDate),
     CHECK(mint <= maxt)
 );
+CREATE TABLE IF NOT EXISTS TemperatureObservations (
+    id INTEGER PRIMARY KEY,
+    regionName TEXT NOT NULL,
+    dataDate TEXT NOT NULL,
+    mint REAL NOT NULL,
+    maxt REAL NOT NULL,
+    UNIQUE(regionName, dataDate),
+    CHECK(mint <= maxt)
+);
 CREATE TABLE IF NOT EXISTS ForecastMetadata (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -25,11 +34,31 @@ CREATE TABLE IF NOT EXISTS ForecastMetadata (
 '''
 
 
+def preserve_legacy_observations(conn):
+    """Migrate the old shared table once, before it can be replaced by forecasts."""
+    kind = conn.execute("SELECT value FROM ForecastMetadata WHERE key='kind'").fetchone()
+    migrated = conn.execute("SELECT value FROM ForecastMetadata WHERE key='history_migrated'").fetchone()
+    if kind is not None and kind[0] == 'observation' and not migrated:
+        conn.execute("""INSERT INTO TemperatureObservations(regionName, dataDate, mint, maxt)
+            SELECT regionName, dataDate, mint, maxt FROM TemperatureForecasts WHERE 1
+            ON CONFLICT(regionName, dataDate) DO UPDATE SET
+            mint = MIN(TemperatureObservations.mint, excluded.mint),
+            maxt = MAX(TemperatureObservations.maxt, excluded.maxt)""")
+    conn.execute("INSERT OR REPLACE INTO ForecastMetadata VALUES ('history_migrated', '1')")
+
+
+def active_table(conn):
+    kind = conn.execute("SELECT value FROM ForecastMetadata WHERE key='kind'").fetchone()
+    migrated = conn.execute("SELECT value FROM ForecastMetadata WHERE key='history_migrated'").fetchone()
+    return 'TemperatureObservations' if kind is not None and kind[0] == 'observation' and migrated else 'TemperatureForecasts'
+
+
 def save_forecasts(rows, db_path=DB_PATH, source='CWA F-A0010-001'):
     validate_week(rows)
     with closing(sqlite3.connect(db_path)) as conn:
         conn.executescript(SCHEMA)
         with conn:
+            preserve_legacy_observations(conn)
             # Replace one validated 7-day snapshot, preventing obsolete dates in the UI.
             conn.execute('DELETE FROM TemperatureForecasts')
             conn.executemany('INSERT INTO TemperatureForecasts(regionName, dataDate, mint, maxt) VALUES (:regionName, :dataDate, :mint, :maxt)', rows)
@@ -50,9 +79,13 @@ def save_observations(rows, db_path=DB_PATH):
     with closing(sqlite3.connect(db_path)) as conn:
         conn.executescript(SCHEMA)
         with conn:
-            # Separate source kinds: never combine forecast values and observations.
-            conn.execute('DELETE FROM TemperatureForecasts')
-            conn.executemany('INSERT INTO TemperatureForecasts(regionName, dataDate, mint, maxt) VALUES (:regionName, :dataDate, :mint, :maxt)', rows)
+            preserve_legacy_observations(conn)
+            # Keep historical days; repeated samples update extrema without duplication.
+            conn.executemany("""INSERT INTO TemperatureObservations(regionName, dataDate, mint, maxt)
+                VALUES (:regionName, :dataDate, :mint, :maxt)
+                ON CONFLICT(regionName, dataDate) DO UPDATE SET
+                mint = MIN(TemperatureObservations.mint, excluded.mint),
+                maxt = MAX(TemperatureObservations.maxt, excluded.maxt)""", rows)
             conn.executemany('INSERT OR REPLACE INTO ForecastMetadata(key, value) VALUES (?, ?)', [
                 ('source', 'CWA O-A0003-001 既有測站觀測'), ('kind', 'observation'),
                 ('imported_at', datetime.now(timezone.utc).isoformat())])
@@ -64,14 +97,14 @@ def connect_readonly(db_path=DB_PATH):
 
 def query_regions(db_path=DB_PATH):
     with closing(connect_readonly(db_path)) as conn:
-        found = {r[0] for r in conn.execute('SELECT DISTINCT regionName FROM TemperatureForecasts')}
+        found = {r[0] for r in conn.execute(f'SELECT DISTINCT regionName FROM {active_table(conn)}')}
     return [name for name in REGIONS if name in found]
 
 
 def query_forecasts(region=None, db_path=DB_PATH, day=None, start=None, end=None):
     with closing(connect_readonly(db_path)) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute('''SELECT regionName, dataDate, mint, maxt FROM TemperatureForecasts
+        rows = conn.execute(f'''SELECT regionName, dataDate, mint, maxt FROM {active_table(conn)}
             WHERE (? IS NULL OR regionName = ?) AND (? IS NULL OR dataDate = ?)
             AND (? IS NULL OR dataDate >= ?) AND (? IS NULL OR dataDate <= ?)
             ORDER BY dataDate, regionName''', (region, region, day, day, start, start, end, end)).fetchall()

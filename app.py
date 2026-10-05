@@ -21,12 +21,12 @@ try:
     metadata = query_metadata(db_path)
     all_rows = query_forecasts(db_path=db_path)
 except (sqlite3.Error, OSError):
-    st.warning('尚未建立可用的預報資料庫。請先完成資料擷取、解析與匯入。')
+    st.warning('尚未建立可用的氣溫資料庫。請先完成資料擷取、解析與匯入。')
     st.code('python import_observations.py\n# 或匯入預報：\npython fetch_weather.py\npython parse_weather.py\npython database.py', language='bash')
     st.info('資料來源：F-A0010-001。若氣象署回傳 404，請向老師確認資料集或取得同資料集 JSON，再執行解析與匯入。此頁不會以即時觀測或模擬數值冒充預報。')
     st.stop()
 if not all_rows or not regions:
-    st.info('SQLite 尚無預報資料，請先匯入。')
+    st.info('SQLite 尚無氣溫資料，請先匯入。')
     st.stop()
 if 'TEST' in metadata.get('source', '') or '示範' in metadata.get('source', ''):
     st.warning('這是測試資料畫面，不是真實 CWA 預報，不可用於天氣決策或當成 API 成功成果。')
@@ -41,16 +41,36 @@ with st.sidebar:
     st.markdown('本頁從 SQLite 查詢，不會直接呼叫 CWA API。')
     st.markdown('[CWA 資料集說明](https://opendata.cwa.gov.tw/dataset/forecast/F-A0010-001)')
 available_dates = sorted({r['dataDate'] for r in all_rows})
-default_start = (pd.Timestamp(available_dates[-1]) - pd.Timedelta(days=6)).date() if is_observation else pd.Timestamp(available_dates[0]).date()
-week_start = st.sidebar.date_input('一週起始日期', value=default_start)
-start = week_start.isoformat()
-end = (week_start + timedelta(days=6)).isoformat()
+if is_observation:
+    st.sidebar.caption(f'已累積資料：{available_dates[0]} 至 {available_dates[-1]}（{len(available_dates)} 個日期）')
+    period = st.sidebar.selectbox('歷史查詢範圍', ['最近 7 天', '最近 14 天', '最近 30 天', '全部紀錄', '自訂日期'])
+    latest = pd.Timestamp(available_dates[-1]).date()
+    if period == '自訂日期':
+        start_day = st.sidebar.date_input('開始日期', value=latest - timedelta(days=6))
+        end_day = st.sidebar.date_input('結束日期', value=latest)
+    elif period == '全部紀錄':
+        start_day, end_day = pd.Timestamp(available_dates[0]).date(), latest
+    else:
+        days = int(period.split()[1])
+        start_day, end_day = latest - timedelta(days=days-1), latest
+        st.sidebar.caption('最近天數以資料庫最新觀測日期為基準。')
+    if start_day > end_day:
+        st.error('開始日期不可晚於結束日期，請重新選擇。')
+        st.stop()
+    start, end = start_day.isoformat(), end_day.isoformat()
+else:
+    week_start = st.sidebar.date_input('一週起始日期', value=pd.Timestamp(available_dates[0]).date())
+    start, end = week_start.isoformat(), (week_start + timedelta(days=6)).isoformat()
+total_days = (pd.Timestamp(end) - pd.Timestamp(start)).days + 1
+if total_days > 3660:
+    st.warning('一次最多顯示 3660 天，請縮小日期範圍。')
+    st.stop()
 rows = query_forecasts(region, db_path, start=start, end=end)
-calendar = pd.DataFrame({'dataDate': pd.date_range(start, periods=7).strftime('%Y-%m-%d')})
+calendar = pd.DataFrame({'dataDate': pd.date_range(start, end).strftime('%Y-%m-%d')})
 frame = calendar.merge(pd.DataFrame(rows, columns=['regionName', 'dataDate', 'mint', 'maxt']), on='dataDate', how='left')
 count = int(frame['mint'].notna().sum())
-if count < 7:
-    st.warning(f'此週只有 {count}/7 天有資料。缺少日期顯示空值，不補造氣溫；若作業須七天真實預報，仍需匯入完整預報資料。')
+if count < total_days:
+    st.warning(f'此範圍只有 {count}/{total_days} 天有資料；缺少日期顯示空值，不補造氣溫。')
 today = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
 if available_dates[-1] < today:
     st.warning('目前資料日期早於今天，請更新資料。')
@@ -60,7 +80,7 @@ st.caption(f'{start} — {end}')
 metrics = st.columns(3)
 metrics[0].metric('區間最低溫', f"{frame['mint'].min():g} °C" if count else '—')
 metrics[1].metric('區間最高溫', f"{frame['maxt'].max():g} °C" if count else '—')
-metrics[2].metric('有資料天數', f'{count}/7')
+metrics[2].metric('有資料天數', f'{count}/{total_days}')
 chart_col, table_col = st.columns([1.7, 1])
 with chart_col:
     long = frame.melt(id_vars=['dataDate'], value_vars=['mint', 'maxt'], var_name='series', value_name='temperature')
@@ -74,11 +94,14 @@ with chart_col:
     st.altair_chart(chart, use_container_width=True)
 with table_col:
     st.dataframe(frame[['dataDate', 'mint', 'maxt']].rename(columns={'dataDate': 'Date', 'mint': 'MinT (°C)', 'maxt': 'MaxT (°C)'}), hide_index=True, width='stretch')
-    st.download_button('下載此地區 CSV', frame.to_csv(index=False).encode('utf-8-sig'), file_name=f'{region}_forecast.csv', mime='text/csv')
+    st.download_button('下載此地區 CSV', frame.to_csv(index=False).encode('utf-8-sig'), file_name=f'{region}_{start}_{end}.csv', mime='text/csv')
 
 st.divider()
 st.subheader('臺灣地區氣溫地圖')
-dates = sorted({r['dataDate'] for r in all_rows})
+dates = sorted({r['dataDate'] for r in all_rows if start <= r['dataDate'] <= end})
+if not dates:
+    st.info('選取範圍內沒有地圖觀測紀錄，請調整日期。')
+    st.stop()
 day = st.selectbox('地圖資料日期', dates, index=len(dates)-1)
 st.caption('顏色依 (MinT + MaxT) ÷ 2 的氣溫區間中點；標記為地區代表位置，並非測站或行政邊界。')
 map_rows = query_forecasts(db_path=db_path, day=day)
@@ -92,5 +115,6 @@ for row in map_rows:
 st_folium(map_view, height=470, use_container_width=True, returned_objects=[], key=f'forecast-map-{day}')
 st.caption('🔵 <20°C　🟢 20–<25°C　🟡 25–30°C　🔴 >30°C')
 with st.expander('SQLite 查詢與作業流程'):
-    st.code('SELECT DISTINCT regionName FROM TemperatureForecasts;\nSELECT dataDate, mint, maxt FROM TemperatureForecasts\nWHERE regionName = ? ORDER BY dataDate;', language='sql')
+    table_name = 'TemperatureObservations' if is_observation else 'TemperatureForecasts'
+    st.code(f'SELECT DISTINCT regionName FROM {table_name};\nSELECT dataDate, mint, maxt FROM {table_name}\nWHERE regionName = ? AND dataDate BETWEEN ? AND ? ORDER BY dataDate;', language='sql')
     st.write('資料庫紀錄：', len(all_rows), '筆；同地區／日期唯一，重複匯入不累增。')
