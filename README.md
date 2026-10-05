@@ -19,7 +19,18 @@
 | 一週表格 | 與圖表使用同一批 SQL 查詢結果；提供 CSV 下載 |
 | 額外功能 | Folium 六區地圖、日期選擇、資料來源／匯入時間、空資料與過期提示 |
 
-**目前資料限制：** 依使用者指示沿用既有 `O-A0003-001` 測站觀測。這不是未來七天天氣預報。MinT／MaxT 是同區域、同日期之已存測站樣本的最小／最大氣溫，不代表完整全天極值。目前本機保留 2026-09-21 與 2026-10-05 兩個觀測日期；其他尚未收集的日期顯示空值，不內插、不補造、不重複數值。
+**目前展示內容：** 真實歷史觀測已回補 **2026-09-21～2026-10-05，15 天 × 六區 = 90 筆**。9/21～10/4 使用中央氣象署 CODiS 代表測站的每日最低／最高溫；10/5 尚未結束，只顯示同一測站當日已收集的 O-A0003-001 樣本極值，表格標示「當日樣本（未完整）」。這是觀測紀錄，不是未來預報，也不是全區域所有測站的極值。
+
+| 地區 | CODiS 代表測站 | 站號 |
+|---|---|---|
+| 北部 | 臺北 | 466920 |
+| 中部 | 臺中 | 467490 |
+| 南部 | 臺南 | 467410 |
+| 東北部 | 宜蘭 | 467080 |
+| 東部 | 花蓮 | 466990 |
+| 東南部 | 臺東 | 467660 |
+
+資料出處：[中央氣象署 CODiS](https://codis.cwa.gov.tw/)。日資料通常於隔日更新，今天不能視為完整日極值。原本多站樣本統計另存於 `TemperatureObservations`，沒有刪除或與代表站資料混合。
 
 Web App 已支援完整七天預報模式；若老師嚴格要求「真實未來一週預報」，仍需取得並匯入完整六區 × 七天 JSON。指定 `F-A0010-001` 的 API 本次實測回傳 404，因此不宣稱已完成真實七天預報擷取。
 
@@ -37,7 +48,21 @@ python -m pip install -r requirements.txt
 
 建議 Python 3.11 或 3.12；本機已以 Python 3.9.6 驗證。Windows 啟動虛擬環境使用 `.venv\Scripts\activate`。
 
-### A. 使用既有觀測資料（目前採用）
+### A. 回補歷史觀測（目前採用）
+
+首次下載沒有 `data/weather.db` 時，先執行 `npm ci`，並在 `.env.local` 設定自己的 `CWA_API_KEY`。以下流程會保留原觀測並建立六區代表站歷史：
+
+```sh
+npm run sync
+python backfill_history.py --start 2026-09-21
+python -m streamlit run app.py --server.address 127.0.0.1
+```
+
+`--end` 預設為臺灣今天，亦可指定，例如 `--end 2026-10-04`。截止昨天以前的正式 CODiS 資料不需要 CWA API 金鑰；包含今天時，需先同步同一代表站的即時樣本。資料下載、地區及日期完整性驗證全部通過才更新資料庫，不以內插值或其他測站冒充缺少日期。
+
+重新匯入不新增重複列。當日未完整樣本日後會由正式日資料替換；正式日資料不會被未完整樣本降級覆蓋。CODiS 網站查詢介面如有異動，腳本會報錯並保留原資料。
+
+### A2. 使用原多站觀測統計
 
 如果已有 `data/weather.db`，直接執行：
 
@@ -79,20 +104,21 @@ python -m streamlit run app.py --server.address 127.0.0.1
 3. 圖表、表格和 CSV 使用相同日期範圍；地圖日期也限制在所選範圍。
 4. 沒有紀錄的日子顯示空值；開始日期晚於結束日期時提示修正。
 
-每天要累積新資料，請手動執行：
+以後要更新至當天，請手動執行：
 
 ```sh
 npm run sync
-python import_observations.py
+python backfill_history.py --start 2026-09-21
 ```
 
-這會下載當下的 CWA 測站觀測，無法回補過去未收集的日期；不需讓 Streamlit 一直開著，但要在需要收集資料時執行同步。目前未設定自動排程。SQLite 資料會在關閉終端機或重開機後保留。要取得未收集的過往日期，需另行取得歷史資料來源，不能由目前即時 API 推算。
+再按網頁「重新讀取資料庫」。第一次正式啟動歷史模式，預設顯示「全部紀錄」；使用者也可切換最近 7／14／30 天或自訂日期。目前未設定自動排程，不需讓 Streamlit 一直開著；SQLite 資料在關閉終端機或重開機後仍會保留。
 
 ## SQLite schema 與查詢
 
 `data.db` 的 `TemperatureForecasts`：`id INTEGER PRIMARY KEY`、`regionName TEXT`、`dataDate TEXT`、`mint REAL`、`maxt REAL`，另加地區／日期唯一約束與 `mint <= maxt` 檢查。
 `TemperatureObservations` 使用相同欄位，獨立保存累積的歷史觀測；舊版觀測資料會自動保留至此表。
-`ForecastMetadata` 記錄來源、資料類型及匯入時間。
+`TemperatureStationHistory` 獨立保存代表站歷史，額外記錄 `stationId`、`stationName`、`source`、`isPartial`。
+`ForecastMetadata` 記錄目前展示來源、資料類型及匯入時間；每種資料表保持獨立。
 
 ```sql
 SELECT DISTINCT regionName FROM TemperatureForecasts;
@@ -103,6 +129,8 @@ ORDER BY dataDate;
 
 ## 檔案與驗證
 
+- `backfill_history.py`：從官方 CODiS 月報表取得日極值，檢查六區日期完整性並回補至今天。
+- `tests_python/test_backfill.py`：正式／未完整狀態、來源欄位、無效值、測站一致性與 UI 測試。
 - `app.py`：Streamlit 主程式，只讀 SQLite。
 - `database.py`：儲存、驗證與參數化 SQL 查詢。
 - `import_observations.py`：將原有觀測庫轉為六區日期統計。

@@ -27,6 +27,19 @@ CREATE TABLE IF NOT EXISTS TemperatureObservations (
     UNIQUE(regionName, dataDate),
     CHECK(mint <= maxt)
 );
+CREATE TABLE IF NOT EXISTS TemperatureStationHistory (
+    id INTEGER PRIMARY KEY,
+    regionName TEXT NOT NULL,
+    dataDate TEXT NOT NULL,
+    mint REAL NOT NULL,
+    maxt REAL NOT NULL,
+    stationId TEXT NOT NULL,
+    stationName TEXT NOT NULL,
+    source TEXT NOT NULL,
+    isPartial INTEGER NOT NULL CHECK(isPartial IN (0,1)),
+    UNIQUE(regionName, dataDate),
+    CHECK(mint <= maxt)
+);
 CREATE TABLE IF NOT EXISTS ForecastMetadata (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -50,6 +63,8 @@ def preserve_legacy_observations(conn):
 def active_table(conn):
     kind = conn.execute("SELECT value FROM ForecastMetadata WHERE key='kind'").fetchone()
     migrated = conn.execute("SELECT value FROM ForecastMetadata WHERE key='history_migrated'").fetchone()
+    if kind is not None and kind[0] == 'station_history':
+        return 'TemperatureStationHistory'
     return 'TemperatureObservations' if kind is not None and kind[0] == 'observation' and migrated else 'TemperatureForecasts'
 
 
@@ -91,6 +106,31 @@ def save_observations(rows, db_path=DB_PATH):
                 ('imported_at', datetime.now(timezone.utc).isoformat())])
 
 
+def save_station_history(rows, db_path=DB_PATH):
+    from parse_weather import temperature, date_of
+    if not rows:
+        raise ValueError('沒有歷史資料。')
+    for row in rows:
+        if row['regionName'] not in REGIONS or date_of(row['dataDate']) != row['dataDate']:
+            raise ValueError('地區或日期無效。')
+        if temperature(row['mint']) is None or temperature(row['maxt']) is None or row['mint'] > row['maxt']:
+            raise ValueError('日氣溫無效。')
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.executescript(SCHEMA)
+        with conn:
+            preserve_legacy_observations(conn)
+            conn.executemany("""INSERT INTO TemperatureStationHistory
+                (regionName,dataDate,mint,maxt,stationId,stationName,source,isPartial)
+                VALUES (:regionName,:dataDate,:mint,:maxt,:stationId,:stationName,:source,:isPartial)
+                ON CONFLICT(regionName,dataDate) DO UPDATE SET
+                mint=excluded.mint, maxt=excluded.maxt, stationId=excluded.stationId,
+                stationName=excluded.stationName, source=excluded.source, isPartial=excluded.isPartial
+                WHERE excluded.isPartial <= TemperatureStationHistory.isPartial""", rows)
+            conn.executemany('INSERT OR REPLACE INTO ForecastMetadata(key,value) VALUES (?,?)', [
+                ('source', 'CWA CODiS 六區代表站每日極值；當日為 O-A0003-001 未完整樣本'),
+                ('kind', 'station_history'), ('imported_at', datetime.now(timezone.utc).isoformat())])
+
+
 def connect_readonly(db_path=DB_PATH):
     return sqlite3.connect(Path(db_path).resolve().as_uri() + '?mode=ro', uri=True)
 
@@ -104,7 +144,9 @@ def query_regions(db_path=DB_PATH):
 def query_forecasts(region=None, db_path=DB_PATH, day=None, start=None, end=None):
     with closing(connect_readonly(db_path)) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(f'''SELECT regionName, dataDate, mint, maxt FROM {active_table(conn)}
+        table = active_table(conn)
+        extra = ', stationId, stationName, source, isPartial' if table == 'TemperatureStationHistory' else ''
+        rows = conn.execute(f'''SELECT regionName, dataDate, mint, maxt{extra} FROM {table}
             WHERE (? IS NULL OR regionName = ?) AND (? IS NULL OR dataDate = ?)
             AND (? IS NULL OR dataDate >= ?) AND (? IS NULL OR dataDate <= ?)
             ORDER BY dataDate, regionName''', (region, region, day, day, start, start, end, end)).fetchall()

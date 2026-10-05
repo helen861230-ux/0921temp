@@ -30,8 +30,11 @@ if not all_rows or not regions:
     st.stop()
 if 'TEST' in metadata.get('source', '') or '示範' in metadata.get('source', ''):
     st.warning('這是測試資料畫面，不是真實 CWA 預報，不可用於天氣決策或當成 API 成功成果。')
-is_observation = metadata.get('kind') == 'observation'
-if is_observation:
+is_station_history = metadata.get('kind') == 'station_history'
+is_observation = metadata.get('kind') in ('observation', 'station_history')
+if is_station_history:
+    st.info('歷史日期採 CODiS 代表測站每日最低／最高溫，不代表整個地區的極值。今天尚未結束，僅顯示同一測站已收集樣本，並非完整日極值。')
+elif is_observation:
     st.info('目前使用既有測站觀測，不是未來預報。MinT／MaxT 為該地區已儲存測站樣本的最低／最高氣溫，並非完整全天的最低／最高溫。')
 st.caption(f"資料來源：{metadata.get('source', '未知')} · 匯入時間：{metadata.get('imported_at', '未知')}")
 with st.sidebar:
@@ -39,11 +42,11 @@ with st.sidebar:
     region = st.selectbox('選擇地區 / Select Region', regions)
     st.button('重新讀取資料庫')
     st.markdown('本頁從 SQLite 查詢，不會直接呼叫 CWA API。')
-    st.markdown('[CWA 資料集說明](https://opendata.cwa.gov.tw/dataset/forecast/F-A0010-001)')
+    st.markdown('[CWA CODiS 歷史觀測](https://codis.cwa.gov.tw/)' if is_station_history else '[CWA 資料集說明](https://opendata.cwa.gov.tw/dataset/forecast/F-A0010-001)')
 available_dates = sorted({r['dataDate'] for r in all_rows})
 if is_observation:
     st.sidebar.caption(f'已累積資料：{available_dates[0]} 至 {available_dates[-1]}（{len(available_dates)} 個日期）')
-    period = st.sidebar.selectbox('歷史查詢範圍', ['最近 7 天', '最近 14 天', '最近 30 天', '全部紀錄', '自訂日期'])
+    period = st.sidebar.selectbox('歷史查詢範圍', ['最近 7 天', '最近 14 天', '最近 30 天', '全部紀錄', '自訂日期'], index=3 if is_station_history else 0)
     latest = pd.Timestamp(available_dates[-1]).date()
     if period == '自訂日期':
         start_day = st.sidebar.date_input('開始日期', value=latest - timedelta(days=6))
@@ -67,7 +70,10 @@ if total_days > 3660:
     st.stop()
 rows = query_forecasts(region, db_path, start=start, end=end)
 calendar = pd.DataFrame({'dataDate': pd.date_range(start, end).strftime('%Y-%m-%d')})
-frame = calendar.merge(pd.DataFrame(rows, columns=['regionName', 'dataDate', 'mint', 'maxt']), on='dataDate', how='left')
+columns = ['regionName', 'dataDate', 'mint', 'maxt'] + (['stationId', 'stationName', 'source', 'isPartial'] if is_station_history else [])
+frame = calendar.merge(pd.DataFrame(rows, columns=columns), on='dataDate', how='left')
+if is_station_history and rows:
+    st.caption(f"代表測站：{rows[0]['stationName']}（{rows[0]['stationId']}）")
 count = int(frame['mint'].notna().sum())
 if count < total_days:
     st.warning(f'此範圍只有 {count}/{total_days} 天有資料；缺少日期顯示空值，不補造氣溫。')
@@ -93,7 +99,10 @@ with chart_col:
     ).properties(height=320)
     st.altair_chart(chart, use_container_width=True)
 with table_col:
-    st.dataframe(frame[['dataDate', 'mint', 'maxt']].rename(columns={'dataDate': 'Date', 'mint': 'MinT (°C)', 'maxt': 'MaxT (°C)'}), hide_index=True, width='stretch')
+    display = frame[['dataDate', 'mint', 'maxt']].rename(columns={'dataDate': 'Date', 'mint': 'MinT (°C)', 'maxt': 'MaxT (°C)'})
+    if is_station_history:
+        display['資料狀態'] = frame['isPartial'].map({0: 'CODiS 日極值', 1: '當日樣本（未完整）'}).fillna('無資料')
+    st.dataframe(display, hide_index=True, width='stretch')
     st.download_button('下載此地區 CSV', frame.to_csv(index=False).encode('utf-8-sig'), file_name=f'{region}_{start}_{end}.csv', mime='text/csv')
 
 st.divider()
@@ -105,16 +114,18 @@ if not dates:
 day = st.selectbox('地圖資料日期', dates, index=len(dates)-1)
 st.caption('顏色依 (MinT + MaxT) ÷ 2 的氣溫區間中點；標記為地區代表位置，並非測站或行政邊界。')
 map_rows = query_forecasts(db_path=db_path, day=day)
+if is_station_history:
+    st.caption('北部：臺北；中部：臺中；南部：臺南；東北部：宜蘭；東部：花蓮；東南部：臺東。')
 map_view = folium.Map(location=[23.7, 121.0], zoom_start=7, tiles='OpenStreetMap')
 for row in map_rows:
     mean = (row['mint'] + row['maxt']) / 2
     color = '#1677ff' if mean < 20 else '#16a34a' if mean < 25 else '#eab308' if mean <= 30 else '#ef4444'
     folium.CircleMarker(location=REGION_COORDINATES[row['regionName']], radius=12, color='white', weight=2,
         fill=True, fill_color=color, fill_opacity=0.95, tooltip=f"{row['regionName']} · {mean:g} °C",
-        popup=folium.Popup(f"{row['regionName']}<br>Date: {row['dataDate']}<br>Min: {row['mint']:g} °C<br>Max: {row['maxt']:g} °C<br>區間中點: {mean:g} °C", max_width=240)).add_to(map_view)
+        popup=folium.Popup(f"{row['regionName']}<br>{row.get('stationName', '')} {row.get('source', '')}<br>Date: {row['dataDate']}<br>Min: {row['mint']:g} °C<br>Max: {row['maxt']:g} °C<br>區間中點: {mean:g} °C", max_width=240)).add_to(map_view)
 st_folium(map_view, height=470, use_container_width=True, returned_objects=[], key=f'forecast-map-{day}')
 st.caption('🔵 <20°C　🟢 20–<25°C　🟡 25–30°C　🔴 >30°C')
 with st.expander('SQLite 查詢與作業流程'):
-    table_name = 'TemperatureObservations' if is_observation else 'TemperatureForecasts'
+    table_name = 'TemperatureStationHistory' if is_station_history else ('TemperatureObservations' if is_observation else 'TemperatureForecasts')
     st.code(f'SELECT DISTINCT regionName FROM {table_name};\nSELECT dataDate, mint, maxt FROM {table_name}\nWHERE regionName = ? AND dataDate BETWEEN ? AND ? ORDER BY dataDate;', language='sql')
     st.write('資料庫紀錄：', len(all_rows), '筆；同地區／日期唯一，重複匯入不累增。')
