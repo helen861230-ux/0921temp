@@ -50,3 +50,15 @@ data/
 *.db-shm
 *.sqlite-wal
 *.sqlite-shm
+
+# HW10 Python runtime and generated weather data
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+work/
+weather_data.json
+weather_data.csv
+*.json.tmp
+*.csv.tmp
+.streamlit/secrets.toml

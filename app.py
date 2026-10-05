@@ -1,0 +1,96 @@
+"""HW10: Streamlit reads SQLite only; API ingestion is a separate CLI step."""
+import os
+import sqlite3
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import altair as alt
+import folium
+import pandas as pd
+import streamlit as st
+from streamlit_folium import st_folium
+from database import query_forecasts, query_regions, query_metadata
+from forecast_config import DB_PATH, REGION_COORDINATES
+
+st.set_page_config(page_title='HW10 Taiwan Weather Forecast', page_icon='🌤️', layout='wide')
+st.title('🌤️ Taiwan Weather Dashboard')
+st.caption('HW10-4 · 地區氣溫查詢｜CWA → Python → SQLite → Streamlit')
+db_path = Path(os.environ.get('FORECAST_DB_PATH', str(DB_PATH)))
+try:
+    regions = query_regions(db_path)
+    metadata = query_metadata(db_path)
+    all_rows = query_forecasts(db_path=db_path)
+except (sqlite3.Error, OSError):
+    st.warning('尚未建立可用的預報資料庫。請先完成資料擷取、解析與匯入。')
+    st.code('python import_observations.py\n# 或匯入預報：\npython fetch_weather.py\npython parse_weather.py\npython database.py', language='bash')
+    st.info('資料來源：F-A0010-001。若氣象署回傳 404，請向老師確認資料集或取得同資料集 JSON，再執行解析與匯入。此頁不會以即時觀測或模擬數值冒充預報。')
+    st.stop()
+if not all_rows or not regions:
+    st.info('SQLite 尚無預報資料，請先匯入。')
+    st.stop()
+if 'TEST' in metadata.get('source', '') or '示範' in metadata.get('source', ''):
+    st.warning('這是測試資料畫面，不是真實 CWA 預報，不可用於天氣決策或當成 API 成功成果。')
+is_observation = metadata.get('kind') == 'observation'
+if is_observation:
+    st.info('目前使用既有測站觀測，不是未來預報。MinT／MaxT 為該地區已儲存測站樣本的最低／最高氣溫，並非完整全天的最低／最高溫。')
+st.caption(f"資料來源：{metadata.get('source', '未知')} · 匯入時間：{metadata.get('imported_at', '未知')}")
+with st.sidebar:
+    st.header('氣溫查詢')
+    region = st.selectbox('選擇地區 / Select Region', regions)
+    st.button('重新讀取資料庫')
+    st.markdown('本頁從 SQLite 查詢，不會直接呼叫 CWA API。')
+    st.markdown('[CWA 資料集說明](https://opendata.cwa.gov.tw/dataset/forecast/F-A0010-001)')
+available_dates = sorted({r['dataDate'] for r in all_rows})
+default_start = (pd.Timestamp(available_dates[-1]) - pd.Timedelta(days=6)).date() if is_observation else pd.Timestamp(available_dates[0]).date()
+week_start = st.sidebar.date_input('一週起始日期', value=default_start)
+start = week_start.isoformat()
+end = (week_start + timedelta(days=6)).isoformat()
+rows = query_forecasts(region, db_path, start=start, end=end)
+calendar = pd.DataFrame({'dataDate': pd.date_range(start, periods=7).strftime('%Y-%m-%d')})
+frame = calendar.merge(pd.DataFrame(rows, columns=['regionName', 'dataDate', 'mint', 'maxt']), on='dataDate', how='left')
+count = int(frame['mint'].notna().sum())
+if count < 7:
+    st.warning(f'此週只有 {count}/7 天有資料。缺少日期顯示空值，不補造氣溫；若作業須七天真實預報，仍需匯入完整預報資料。')
+today = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+if available_dates[-1] < today:
+    st.warning('目前資料日期早於今天，請更新資料。')
+label = '觀測氣溫' if is_observation else 'Temperature Forecast'
+st.subheader(f'{label} · {region}')
+st.caption(f'{start} — {end}')
+metrics = st.columns(3)
+metrics[0].metric('區間最低溫', f"{frame['mint'].min():g} °C" if count else '—')
+metrics[1].metric('區間最高溫', f"{frame['maxt'].max():g} °C" if count else '—')
+metrics[2].metric('有資料天數', f'{count}/7')
+chart_col, table_col = st.columns([1.7, 1])
+with chart_col:
+    long = frame.melt(id_vars=['dataDate'], value_vars=['mint', 'maxt'], var_name='series', value_name='temperature')
+    long['series'] = long['series'].map({'mint': 'MinT 最低溫', 'maxt': 'MaxT 最高溫'})
+    chart = alt.Chart(long).mark_line(point=True).encode(
+        x=alt.X('dataDate:T', title='日期', axis=alt.Axis(format='%m/%d')),
+        y=alt.Y('temperature:Q', title='氣溫 (°C)', scale=alt.Scale(zero=False)),
+        color=alt.Color('series:N', title=None, scale=alt.Scale(domain=['MaxT 最高溫', 'MinT 最低溫'], range=['#ef4444', '#1677ff'])),
+        tooltip=[alt.Tooltip('dataDate:T', title='日期', format='%Y-%m-%d'), alt.Tooltip('series:N', title='項目'), alt.Tooltip('temperature:Q', title='°C')]
+    ).properties(height=320)
+    st.altair_chart(chart, use_container_width=True)
+with table_col:
+    st.dataframe(frame[['dataDate', 'mint', 'maxt']].rename(columns={'dataDate': 'Date', 'mint': 'MinT (°C)', 'maxt': 'MaxT (°C)'}), hide_index=True, width='stretch')
+    st.download_button('下載此地區 CSV', frame.to_csv(index=False).encode('utf-8-sig'), file_name=f'{region}_forecast.csv', mime='text/csv')
+
+st.divider()
+st.subheader('臺灣地區氣溫地圖')
+dates = sorted({r['dataDate'] for r in all_rows})
+day = st.selectbox('地圖資料日期', dates, index=len(dates)-1)
+st.caption('顏色依 (MinT + MaxT) ÷ 2 的氣溫區間中點；標記為地區代表位置，並非測站或行政邊界。')
+map_rows = query_forecasts(db_path=db_path, day=day)
+map_view = folium.Map(location=[23.7, 121.0], zoom_start=7, tiles='OpenStreetMap')
+for row in map_rows:
+    mean = (row['mint'] + row['maxt']) / 2
+    color = '#1677ff' if mean < 20 else '#16a34a' if mean < 25 else '#eab308' if mean <= 30 else '#ef4444'
+    folium.CircleMarker(location=REGION_COORDINATES[row['regionName']], radius=12, color='white', weight=2,
+        fill=True, fill_color=color, fill_opacity=0.95, tooltip=f"{row['regionName']} · {mean:g} °C",
+        popup=folium.Popup(f"{row['regionName']}<br>Date: {row['dataDate']}<br>Min: {row['mint']:g} °C<br>Max: {row['maxt']:g} °C<br>區間中點: {mean:g} °C", max_width=240)).add_to(map_view)
+st_folium(map_view, height=470, use_container_width=True, returned_objects=[], key=f'forecast-map-{day}')
+st.caption('🔵 <20°C　🟢 20–<25°C　🟡 25–30°C　🔴 >30°C')
+with st.expander('SQLite 查詢與作業流程'):
+    st.code('SELECT DISTINCT regionName FROM TemperatureForecasts;\nSELECT dataDate, mint, maxt FROM TemperatureForecasts\nWHERE regionName = ? ORDER BY dataDate;', language='sql')
+    st.write('資料庫紀錄：', len(all_rows), '筆；同地區／日期唯一，重複匯入不累增。')
