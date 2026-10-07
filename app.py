@@ -1,4 +1,4 @@
-"""HW10: Streamlit reads SQLite only; API ingestion is a separate CLI step."""
+"""HW1: Streamlit reads SQLite only; API ingestion is a separate CLI step."""
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -12,9 +12,9 @@ from streamlit_folium import st_folium
 from database import query_forecasts, query_regions, query_metadata
 from forecast_config import DB_PATH, REGION_COORDINATES
 
-st.set_page_config(page_title='HW10 Taiwan Weather Forecast', page_icon='🌤️', layout='wide')
-st.title('🌤️ Taiwan Weather Dashboard')
-st.caption('HW10-4 · 地區氣溫查詢｜CWA → Python → SQLite → Streamlit')
+st.set_page_config(page_title='HW1: CWA 天氣預報網站 using AI Agent', page_icon='🌤️', layout='wide')
+st.title('HW1: CWA 天氣預報網站 using AI Agent')
+st.caption('HW1 · 地區氣溫查詢｜CWA → Python → SQLite → Streamlit')
 db_path = Path(os.environ.get('FORECAST_DB_PATH', str(DB_PATH)))
 try:
     regions = query_regions(db_path)

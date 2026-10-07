@@ -1,4 +1,4 @@
-# Taiwan CWA Weather GIS
+# HW1: CWA 天氣預報網站 using AI Agent
 
 臺灣中央氣象署資料 → 本機 SQLite → `/api/weather` → React-Leaflet 地圖。
 

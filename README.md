@@ -1,16 +1,16 @@
-# HW10-4 Taiwan Weather Web App
+# HW1: CWA 天氣預報網站 using AI Agent
 
 使用 **Streamlit + Python sqlite3**，從本機 SQLite 查詢地區氣溫，以折線圖及表格呈現 7／14／30 天或自訂日期範圍。不需要部署公開網站。
 
 ## 本機展示（必須先啟動）
 
-[開啟 Streamlit 氣溫 Web App](http://localhost:8501/)
+[HW1: CWA 天氣預報網站 using AI Agent](http://localhost:8501/)
 
 此網址指向使用者自己的電腦。老師需下載並啟動專案，或觀看你在本機的展示；GitHub 不會執行 Python 伺服器。
 
 ## 功能與作業對照
 
-| HW10-4 要求 | 實作 |
+| HW1 要求 | 實作 |
 |---|---|
 | Streamlit Web App | `app.py` |
 | 地區下拉選單 | 北部、中部、南部、東北部、東部、東南部；選單內容由 SQLite 查詢 |

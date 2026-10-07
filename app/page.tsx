@@ -175,14 +175,14 @@ export default function Home() {
                 Milestone 3 Live
               </span>
               <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-                Taiwan Weather GIS
+                HW1: CWA 天氣預報網站 using AI Agent
               </span>
               <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-sky-500/10 text-sky-400 border border-sky-500/20">
                 Leaflet + OpenStreetMap
               </span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white mt-2">
-              Taiwan CWA Weather GIS
+              HW1: CWA 天氣預報網站 using AI Agent
             </h1>
             <p className="text-slate-400 text-sm mt-1">
               臺灣氣象 GIS 空間圖台與地理資訊觀測 (GIS Visualization backed by SQLite /api/weather)
