@@ -1,4 +1,4 @@
-"""HW1: Streamlit reads SQLite only; API ingestion is a separate CLI step."""
+"""HW1: Streamlit reads SQLite only; API ingestion is handled by the update service."""
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -16,6 +16,14 @@ st.set_page_config(page_title='HW1: CWA 天氣預報網站 using AI Agent', page
 st.title('HW1: CWA 天氣預報網站 using AI Agent')
 st.caption('HW1 · 地區氣溫查詢｜CWA → Python → SQLite → Streamlit')
 db_path = Path(os.environ.get('FORECAST_DB_PATH', str(DB_PATH)))
+# Alternate databases (including tests) are never automatically modified.
+if db_path.resolve() == DB_PATH.resolve() and os.environ.get('FORECAST_AUTO_UPDATE', '1') != '0':
+    from auto_update import update_history
+    force_update = st.sidebar.button('立即更新資料')
+    with st.spinner('檢查最新觀測日期；需要更新時會下載資料，請稍候…'):
+        update_result = update_history(force=force_update)
+    if update_result:
+        (st.success if update_result[0] else st.warning)(update_result[1])
 try:
     regions = query_regions(db_path)
     metadata = query_metadata(db_path)
@@ -41,7 +49,7 @@ with st.sidebar:
     st.header('氣溫查詢')
     region = st.selectbox('選擇地區 / Select Region', regions)
     st.button('重新讀取資料庫')
-    st.markdown('本頁從 SQLite 查詢，不會直接呼叫 CWA API。')
+    st.markdown('圖表從 SQLite 查詢；自動更新服務會先取得最新觀測並寫入資料庫。')
     st.markdown('[CWA CODiS 歷史觀測](https://codis.cwa.gov.tw/)' if is_station_history else '[CWA 資料集說明](https://opendata.cwa.gov.tw/dataset/forecast/F-A0010-001)')
 available_dates = sorted({r['dataDate'] for r in all_rows})
 if is_observation:

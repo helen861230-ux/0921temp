@@ -69,7 +69,9 @@ def fetch_daily(region, station_id, station_name, start, end):
 def current_samples(today, source=ROOT / 'data/weather.db'):
     """Only today's stored readings of the SAME six representative stations."""
     rows = []
-    with closing(sqlite3.connect(Path(source).resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+    # WAL databases may need to recreate shared-memory sidecars after Node closes.
+    # mode=rw opens an existing database only; queries below never change records.
+    with closing(sqlite3.connect(Path(source).resolve().as_uri() + '?mode=rw', uri=True)) as conn:
         for region, (station_id, station_name) in STATIONS.items():
             values = []
             for timestamp, raw in conn.execute('SELECT obs_time, air_temperature FROM weather_observations WHERE station_id = ?', (station_id,)):
